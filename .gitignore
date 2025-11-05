@@ -1,0 +1,75 @@
+# =========================
+# Java / IntelliJ / Maven
+# =========================
+
+# Compilação e build
+/target/
+*.class
+*.jar
+*.war
+*.ear
+*.zip
+*.tar.gz
+*.rar
+
+# IntelliJ IDEA
+.idea/
+*.iml
+*.ipr
+*.iws
+out/
+
+# Configuração de IDE e projeto local
+/.classpath
+/.project
+/.settings/
+*.prefs
+
+# Logs e arquivos temporários
+*.log
+logs/
+*.tmp
+*.bak
+*.old
+*.swp
+*.swo
+*.~*
+*.orig
+*.rej
+*~
+
+# Diretórios e relatórios gerados fora do target
+output/
+reports/
+exports/
+generated/
+data/
+cache/
+
+# Arquivos de exportação (relatórios, planilhas, etc.)
+*.csv
+*.xlsx
+*.pdf
+*.json
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
+ehthumbs.db
+desktop.ini
+
+# Maven e ferramentas auxiliares
+dependency-reduced-pom.xml
+.mvn/timing.properties
+
+# Cobertura e testes
+test-output/
+junit-report/
+coverage/
+jacoco.exec
+
+# Arquivos sensíveis e variáveis de ambiente
+.env
+.env.local
+*.secret
+*.key
