@@ -14,15 +14,51 @@ import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 /**
- * Classe principal do projeto WellnessQA.
+ * Classe principal do projeto <b>Wellness QA Reporter</b>.
  *
- * Fluxo de execução:
- * 1. Carrega configurações (config.properties e endpoints.properties)
- * 2. Consulta dados da API Qase (ou lê do cache JSON local)
- * 3. Consolida dados e gera relatórios Excel
+ * <p>Responsável por orquestrar toda a execução do processo automatizado:
+ * desde o carregamento das configurações até a geração do relatório final
+ * em formato Excel. O fluxo de execução é dividido em etapas bem definidas,
+ * garantindo rastreabilidade e isolamento de responsabilidades.</p>
+ *
+ * <h2>Fluxo de execução:</h2>
+ * <ol>
+ *     <li><b>Carrega as configurações</b> a partir dos arquivos
+ *         {@code config.properties} e {@code endpoints.properties}.</li>
+ *     <li><b>Consulta os dados</b> na API Qase para cada projeto e endpoint configurado.</li>
+ *     <li><b>Armazena os resultados</b> em cache local (JSONs em disco).</li>
+ *     <li><b>Consolida os dados</b> em uma estrutura unificada usando {@link DataConsolidator}.</li>
+ *     <li><b>Gera o relatório Excel</b> com base nos dados consolidados usando {@link ReportGenerator}.</li>
+ * </ol>
+ *
+ * <p>Logs estruturados e métricas de execução são gerenciados via
+ * {@link LoggerUtils} e {@link MetricsCollector}, permitindo auditoria e
+ * diagnóstico de performance.</p>
+ *
+ * @author Roberto
+ * @version 1.1
+ * @since 1.0
  */
 public class WellnessQAMain {
 
+    /**
+     * Ponto de entrada principal do sistema.
+     *
+     * <p>Executa todo o pipeline de automação de geração de relatórios Qase,
+     * incluindo as seguintes etapas:</p>
+     * <ul>
+     *     <li>Leitura de configurações</li>
+     *     <li>Consulta de dados na API Qase</li>
+     *     <li>Persistência de JSONs localmente</li>
+     *     <li>Consolidação dos dados</li>
+     *     <li>Geração do relatório Excel</li>
+     * </ul>
+     *
+     * <p>Em caso de falha crítica, o erro é capturado e exibido de forma amigável
+     * no console.</p>
+     *
+     * @param args argumentos opcionais passados via linha de comando (não utilizados).
+     */
     public static void main(String[] args) {
         LoggerUtils.divider();
         LoggerUtils.success("🚀 Iniciando execução do Wellness QA Report");
@@ -61,10 +97,10 @@ public class WellnessQAMain {
                 for (String endpoint : endpoints) {
                     LoggerUtils.step("🔍 Processando [" + project + "] endpoint: " + endpoint);
 
-                    // Busca da API
+                    // Busca os dados da API
                     JSONArray arr = qaseClient.fetchEndpoint(project, endpoint);
 
-                    // Cache local
+                    // Armazena em cache local
                     jsonHandler.saveJsonArray(project, endpoint, arr);
 
                     projectData.put(endpoint, arr);
@@ -75,7 +111,7 @@ public class WellnessQAMain {
                 LoggerUtils.divider();
             }
 
-            // === 3️⃣ Consolidação de dados dos JSONs locais ===
+            // === 3️⃣ Consolidação de dados ===
             LoggerUtils.step("📦 Consolidando dados a partir dos arquivos JSON locais...");
             DataConsolidator consolidator = new DataConsolidator();
             Map<String, JSONObject> consolidatedData = consolidator.consolidateAll();
@@ -84,6 +120,7 @@ public class WellnessQAMain {
             ReportGenerator reportGenerator = new ReportGenerator();
             String timestamp = LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyyMMdd_HHmmss"));
             Path outputPath = Path.of("output", "reports", "WellnessQA_Report_" + timestamp + ".xlsx");
+
             reportGenerator.generateReport(consolidatedData, outputPath);
 
             // === 5️⃣ Finalização ===

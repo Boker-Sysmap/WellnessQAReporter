@@ -17,25 +17,51 @@ import java.util.*;
 import java.util.concurrent.TimeUnit;
 
 /**
- * QaseClient — cliente da API Qase com paginação, retry e controle de timeout.
- * Otimizado para o endpoint "result", que agora é consultado por run_id.
- * Também permite buscar resultados individuais por hash.
+ * Cliente HTTP especializado para comunicação com a <b>API Qase</b>.
+ *
+ * <p>Esta classe implementa lógica de paginação, controle de timeout,
+ * retentativas automáticas (retry) com backoff exponencial e tratamento de endpoints
+ * otimizados (como o endpoint {@code result}, que é consultado por {@code run_id}).</p>
+ *
+ * <p>Ela é responsável por recuperar e agregar os dados brutos dos endpoints configurados
+ * no arquivo {@code endpoints.properties} e posteriormente utilizados nos relatórios Excel.</p>
+ *
+ * <p><b>Recursos principais:</b></p>
+ * <ul>
+ *   <li>Autenticação via token (definido em {@code config.properties});</li>
+ *   <li>Suporte a paginação automática com parâmetros {@code limit} e {@code offset};</li>
+ *   <li>Retentativas automáticas em caso de falha de rede ou timeout (com backoff exponencial);</li>
+ *   <li>Controle de duplicidade de registros baseado em chaves identificadoras (id, case_id, etc);</li>
+ *   <li>Medição de métricas de performance e logging detalhado de cada requisição.</li>
+ * </ul>
  */
 public class QaseClient {
 
+    /** URL base da API Qase (ex: https://api.qase.io/v1) */
     private final String baseUrl;
+
+    /** Token de autenticação configurado em {@code config.properties} */
     private final String token;
 
-    // Endpoints que NÃO exigem código de projeto (são globais)
+    /** Endpoints globais que não exigem código de projeto na URL */
     private static final Set<String> GLOBAL_ENDPOINTS = Set.of(
             "attachment", "author", "custom_field", "shared_parameter", "system_field", "user"
     );
 
+    /**
+     * Construtor padrão — inicializa com base nas configurações de {@link ConfigManager}.
+     */
     public QaseClient() {
         this.baseUrl = ConfigManager.getApiBaseUrl();
         this.token = ConfigManager.getApiToken();
     }
 
+    /**
+     * Executa a coleta completa de dados de todos os projetos e endpoints configurados.
+     *
+     * @return Mapa contendo os dados agregados por projeto e endpoint.
+     *         Estrutura: {@code { "PROJETO": { "endpoint1": [...], "endpoint2": [...] } }}
+     */
     public Map<String, Map<String, JSONArray>> fetchAllConfiguredData() {
         Map<String, Map<String, JSONArray>> allData = new LinkedHashMap<>();
         List<String> projects = ConfigManager.getProjects();
@@ -58,6 +84,17 @@ public class QaseClient {
         return allData;
     }
 
+    /**
+     * Busca os dados de um endpoint específico, aplicando paginação automática
+     * e controle de retentativas em caso de erro.
+     *
+     * <p>Se o endpoint for {@code result}, a busca é realizada por {@code run_id}
+     * (modo otimizado de coleta de resultados).</p>
+     *
+     * @param project Código do projeto (ex: FULLY, CHUBB)
+     * @param endpoint Nome do endpoint (ex: case, result, defect)
+     * @return Um {@link JSONArray} contendo os registros agregados do endpoint.
+     */
     public JSONArray fetchEndpoint(String project, String endpoint) {
         JSONArray aggregate = new JSONArray();
         Set<String> seen = new HashSet<>();
@@ -67,7 +104,7 @@ public class QaseClient {
         int page = 1;
 
         try {
-            // 🔹 Modo otimizado: buscar results por run_id
+            // 🔹 Modo otimizado — busca resultados por run_id
             if (endpoint.equalsIgnoreCase("result")) {
                 LoggerUtils.step("🧠 Endpoint 'result' detectado — alternando para busca por run_id...");
 
@@ -118,7 +155,7 @@ public class QaseClient {
                 return aggregate;
             }
 
-            // 🔁 Demais endpoints seguem normalmente
+            // 🔁 Paginação padrão para outros endpoints
             while (true) {
                 boolean success = false;
                 int retries = 0;
@@ -189,10 +226,21 @@ public class QaseClient {
         return aggregate;
     }
 
+    /**
+     * Executa uma chamada HTTP paginada comum para um endpoint.
+     *
+     * @param project Código do projeto
+     * @param endpoint Nome do endpoint
+     * @param limit Quantidade máxima de registros por página
+     * @param offset Deslocamento (offset) para paginação
+     * @param page Número da página (apenas para logs)
+     * @return {@link JSONArray} com os dados da página
+     * @throws IOException Erro de comunicação HTTP
+     * @throws SocketTimeoutException Timeout de leitura ou conexão
+     */
     private JSONArray fetchPage(String project, String endpoint, int limit, int offset, int page)
             throws IOException, SocketTimeoutException {
 
-        // 🔸 Monta a URL corretamente dependendo do tipo de endpoint
         String urlStr = GLOBAL_ENDPOINTS.contains(endpoint)
                 ? String.format("%s/%s?limit=%d&offset=%d", baseUrl, endpoint, limit, offset)
                 : String.format("%s/%s/%s?limit=%d&offset=%d", baseUrl, endpoint, project, limit, offset);
@@ -205,9 +253,7 @@ public class QaseClient {
         conn.setRequestProperty("Content-Type", "application/json");
         conn.setRequestProperty("Token", token);
         conn.setConnectTimeout(30_000);
-
-        int readTimeoutMs = endpoint.equalsIgnoreCase("result") ? 300_000 : 60_000;
-        conn.setReadTimeout(readTimeoutMs);
+        conn.setReadTimeout(endpoint.equalsIgnoreCase("result") ? 300_000 : 60_000);
         conn.connect();
 
         int status = conn.getResponseCode();
@@ -227,10 +273,20 @@ public class QaseClient {
             throw new IOException("HTTP " + status + " ao acessar " + endpoint);
         }
 
-        JSONObject parsed = new JSONObject(sb.toString());
-        return extractArray(parsed);
+        return extractArray(new JSONObject(sb.toString()));
     }
 
+    /**
+     * Busca uma página de resultados (result) filtrada por {@code run_id}.
+     *
+     * @param project Código do projeto
+     * @param runId ID do run
+     * @param limit Limite de registros por página
+     * @param offset Offset para paginação
+     * @param page Número da página (para logs)
+     * @return {@link JSONArray} contendo os resultados
+     * @throws IOException Em caso de erro HTTP
+     */
     private JSONArray fetchResultPage(String project, int runId, int limit, int offset, int page)
             throws IOException {
 
@@ -264,10 +320,16 @@ public class QaseClient {
             throw new IOException("HTTP " + status + " ao acessar result/" + project);
         }
 
-        JSONObject parsed = new JSONObject(sb.toString());
-        return extractArray(parsed);
+        return extractArray(new JSONObject(sb.toString()));
     }
 
+    /**
+     * Busca um registro específico do endpoint {@code result} pelo hash único.
+     *
+     * @param project Código do projeto
+     * @param hash Identificador único do resultado
+     * @return {@link JSONObject} com os dados do resultado, ou {@code null} se não encontrado.
+     */
     public JSONObject fetchResultByHash(String project, String hash) {
         String urlStr = String.format("%s/result/%s/%s", baseUrl, project, hash);
         LoggerUtils.step("🔍 Buscando result por hash em: " + urlStr);
@@ -306,6 +368,7 @@ public class QaseClient {
         return null;
     }
 
+    /** Extrai o array de dados principal de um JSON retornado pela API. */
     private JSONArray extractArray(JSONObject parsed) {
         if (parsed == null) return new JSONArray();
         if (parsed.has("result")) {
@@ -325,6 +388,7 @@ public class QaseClient {
         return new JSONArray();
     }
 
+    /** Retorna um identificador único para o objeto, com base em campos conhecidos. */
     private String extractId(JSONObject o) {
         String[] keys = {"id", "case_id", "result_id", "run_id", "defect_id"};
         for (String k : keys) {

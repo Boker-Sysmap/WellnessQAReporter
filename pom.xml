@@ -3,7 +3,6 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
                              https://maven.apache.org/xsd/maven-4.0.0.xsd">
-
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.sysmap.wellness</groupId>
@@ -19,21 +18,21 @@
 
         <log4j.version>2.23.1</log4j.version>
         <poi.version>5.4.1</poi.version>
-        <json.version>20250517</json.version>
+        <json.version>20240303</json.version>
         <gson.version>2.10.1</gson.version>
         <commons.io.version>2.18.0</commons.io.version>
         <commons.lang3.version>3.16.0</commons.lang3.version>
     </properties>
 
     <dependencies>
-        <!-- Apache POI -->
+        <!-- Apache POI para relatórios Excel -->
         <dependency>
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
             <version>${poi.version}</version>
         </dependency>
 
-        <!-- JSON -->
+        <!-- Biblioteca JSON oficial (org.json) -->
         <dependency>
             <groupId>org.json</groupId>
             <artifactId>json</artifactId>
@@ -65,6 +64,7 @@
             <artifactId>commons-io</artifactId>
             <version>${commons.io.version}</version>
         </dependency>
+
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
@@ -117,8 +117,10 @@
                                 </filter>
                             </filters>
                             <transformers>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                <transformer
+                                        implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                                <transformer
+                                        implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>com.sysmap.wellness.main.WellnessQAMain</mainClass>
                                 </transformer>
                             </transformers>
@@ -141,40 +143,32 @@
                 </configuration>
             </plugin>
 
-            <!-- Geração de Javadoc (ajustado para /docs) -->
+            <!-- 🧾 Javadoc gerado diretamente em /docs -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
                 <version>3.11.2</version>
+
+                <!-- ⚙️ Configuração global: usada mesmo em mvn javadoc:javadoc -->
+                <configuration>
+                    <useStandardDocletOptions>true</useStandardDocletOptions>
+                    <outputDirectory>${project.basedir}/docs</outputDirectory>
+
+                    <failOnError>false</failOnError>
+                    <quiet>true</quiet>
+                    <encoding>UTF-8</encoding>
+                    <charset>UTF-8</charset>
+                    <docencoding>UTF-8</docencoding>
+                    <doctitle>${project.name} API Documentation</doctitle>
+                    <windowtitle>${project.name} - Javadoc</windowtitle>
+                </configuration>
+
                 <executions>
                     <execution>
                         <id>generate-docs</id>
                         <phase>prepare-package</phase>
                         <goals>
                             <goal>javadoc</goal>
-                        </goals>
-                        <configuration>
-                            <!-- ✅ Agora gera direto em /docs -->
-                            <outputDirectory>${project.basedir}/docs</outputDirectory>
-
-                            <failOnError>false</failOnError>
-                            <quiet>true</quiet>
-                            <encoding>UTF-8</encoding>
-                            <charset>UTF-8</charset>
-                            <docencoding>UTF-8</docencoding>
-                            <doctitle>${project.name} API Documentation</doctitle>
-                            <windowtitle>${project.name} - Javadoc</windowtitle>
-
-                            <!-- Evita criar subpastas e arquivos extras -->
-                            <nohelp>true</nohelp>
-                            <notree>true</notree>
-                        </configuration>
-                    </execution>
-
-                    <execution>
-                        <id>attach-javadocs</id>
-                        <goals>
-                            <goal>jar</goal>
                         </goals>
                     </execution>
                 </executions>
