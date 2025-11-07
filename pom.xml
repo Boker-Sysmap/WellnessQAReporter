@@ -26,24 +26,28 @@
     </properties>
 
     <dependencies>
+        <!-- Apache POI -->
         <dependency>
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
             <version>${poi.version}</version>
         </dependency>
 
+        <!-- JSON -->
         <dependency>
             <groupId>org.json</groupId>
             <artifactId>json</artifactId>
             <version>${json.version}</version>
         </dependency>
 
+        <!-- Gson -->
         <dependency>
             <groupId>com.google.code.gson</groupId>
             <artifactId>gson</artifactId>
             <version>${gson.version}</version>
         </dependency>
 
+        <!-- Log4j -->
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-api</artifactId>
@@ -55,12 +59,12 @@
             <version>${log4j.version}</version>
         </dependency>
 
+        <!-- Apache Commons -->
         <dependency>
             <groupId>commons-io</groupId>
             <artifactId>commons-io</artifactId>
             <version>${commons.io.version}</version>
         </dependency>
-
         <dependency>
             <groupId>org.apache.commons</groupId>
             <artifactId>commons-lang3</artifactId>
@@ -70,8 +74,8 @@
 
     <build>
         <finalName>WellnessQAReporter</finalName>
-        <plugins>
 
+        <plugins>
             <!-- Compilador -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -84,7 +88,7 @@
                 </configuration>
             </plugin>
 
-            <!-- Fat JAR com dependências (ajustado) -->
+            <!-- Fat JAR com dependências -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -98,7 +102,6 @@
                         <configuration>
                             <finalName>WellnessQAReporter</finalName>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
-
                             <filters>
                                 <filter>
                                     <artifact>*:*</artifact>
@@ -113,7 +116,6 @@
                                     </excludes>
                                 </filter>
                             </filters>
-
                             <transformers>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
                                 <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
@@ -139,7 +141,7 @@
                 </configuration>
             </plugin>
 
-            <!-- Geração de Javadoc -->
+            <!-- Geração de Javadoc (ajustado para /docs) -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
@@ -152,7 +154,9 @@
                             <goal>javadoc</goal>
                         </goals>
                         <configuration>
-                            <outputDirectory>${project.basedir}/docs/javadoc</outputDirectory>
+                            <!-- ✅ Agora gera direto em /docs -->
+                            <outputDirectory>${project.basedir}/docs</outputDirectory>
+
                             <failOnError>false</failOnError>
                             <quiet>true</quiet>
                             <encoding>UTF-8</encoding>
@@ -160,8 +164,13 @@
                             <docencoding>UTF-8</docencoding>
                             <doctitle>${project.name} API Documentation</doctitle>
                             <windowtitle>${project.name} - Javadoc</windowtitle>
+
+                            <!-- Evita criar subpastas e arquivos extras -->
+                            <nohelp>true</nohelp>
+                            <notree>true</notree>
                         </configuration>
                     </execution>
+
                     <execution>
                         <id>attach-javadocs</id>
                         <goals>
