@@ -3,6 +3,7 @@
          xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
          xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
                              https://maven.apache.org/xsd/maven-4.0.0.xsd">
+
     <modelVersion>4.0.0</modelVersion>
 
     <groupId>com.sysmap.wellness</groupId>
@@ -25,28 +26,24 @@
     </properties>
 
     <dependencies>
-        <!-- Apache POI for Excel reports -->
         <dependency>
             <groupId>org.apache.poi</groupId>
             <artifactId>poi-ooxml</artifactId>
             <version>${poi.version}</version>
         </dependency>
 
-        <!-- JSON -->
         <dependency>
             <groupId>org.json</groupId>
             <artifactId>json</artifactId>
             <version>${json.version}</version>
         </dependency>
 
-        <!-- Gson -->
         <dependency>
             <groupId>com.google.code.gson</groupId>
             <artifactId>gson</artifactId>
             <version>${gson.version}</version>
         </dependency>
 
-        <!-- Log4j -->
         <dependency>
             <groupId>org.apache.logging.log4j</groupId>
             <artifactId>log4j-api</artifactId>
@@ -58,7 +55,6 @@
             <version>${log4j.version}</version>
         </dependency>
 
-        <!-- Apache Commons -->
         <dependency>
             <groupId>commons-io</groupId>
             <artifactId>commons-io</artifactId>
@@ -74,8 +70,8 @@
 
     <build>
         <finalName>WellnessQAReporter</finalName>
-
         <plugins>
+
             <!-- Compilador -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
@@ -88,7 +84,7 @@
                 </configuration>
             </plugin>
 
-            <!-- Fat JAR com dependências -->
+            <!-- Fat JAR com dependências (ajustado) -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -102,9 +98,25 @@
                         <configuration>
                             <finalName>WellnessQAReporter</finalName>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
+
+                            <filters>
+                                <filter>
+                                    <artifact>*:*</artifact>
+                                    <excludes>
+                                        <exclude>META-INF/*.SF</exclude>
+                                        <exclude>META-INF/*.DSA</exclude>
+                                        <exclude>META-INF/*.RSA</exclude>
+                                        <exclude>META-INF/LICENSE*</exclude>
+                                        <exclude>META-INF/NOTICE*</exclude>
+                                        <exclude>META-INF/DEPENDENCIES</exclude>
+                                        <exclude>META-INF/versions/9/module-info.class</exclude>
+                                    </excludes>
+                                </filter>
+                            </filters>
+
                             <transformers>
-                                <transformer
-                                        implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ServicesResourceTransformer"/>
+                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>com.sysmap.wellness.main.WellnessQAMain</mainClass>
                                 </transformer>
                             </transformers>
@@ -127,22 +139,29 @@
                 </configuration>
             </plugin>
 
-            <!-- 🧾 Gerador de JavaDoc -->
+            <!-- Geração de Javadoc -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-javadoc-plugin</artifactId>
                 <version>3.11.2</version>
                 <executions>
-                    <!-- Gera HTML navegável em docs/javadoc -->
                     <execution>
                         <id>generate-docs</id>
                         <phase>prepare-package</phase>
                         <goals>
                             <goal>javadoc</goal>
                         </goals>
+                        <configuration>
+                            <outputDirectory>${project.basedir}/docs/javadoc</outputDirectory>
+                            <failOnError>false</failOnError>
+                            <quiet>true</quiet>
+                            <encoding>UTF-8</encoding>
+                            <charset>UTF-8</charset>
+                            <docencoding>UTF-8</docencoding>
+                            <doctitle>${project.name} API Documentation</doctitle>
+                            <windowtitle>${project.name} - Javadoc</windowtitle>
+                        </configuration>
                     </execution>
-
-                    <!-- Gera JAR com o javadoc -->
                     <execution>
                         <id>attach-javadocs</id>
                         <goals>
@@ -150,19 +169,8 @@
                         </goals>
                     </execution>
                 </executions>
-
-                <configuration>
-                    <!-- Saída definitiva na raiz do projeto -->
-                    <outputDirectory>${project.basedir}/docs/javadoc</outputDirectory>
-                    <failOnError>false</failOnError>
-                    <quiet>true</quiet>
-                    <encoding>UTF-8</encoding>
-                    <charset>UTF-8</charset>
-                    <docencoding>UTF-8</docencoding>
-                    <doctitle>${project.name} API Documentation</doctitle>
-                    <windowtitle>${project.name} - Javadoc</windowtitle>
-                </configuration>
             </plugin>
+
         </plugins>
     </build>
 </project>
