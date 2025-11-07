@@ -91,7 +91,7 @@ public class JsonHandler {
      *
      * @param projectCode código do projeto
      * @param endpoints lista de endpoints configurados
-     * @return mapa contendo endpoint -> JSONArray
+     * @return mapa contendo endpoint - JSONArray
      */
     public java.util.Map<String, JSONArray> loadAllEndpoints(String projectCode, java.util.List<String> endpoints) {
         java.util.Map<String, JSONArray> dataMap = new java.util.LinkedHashMap<>();

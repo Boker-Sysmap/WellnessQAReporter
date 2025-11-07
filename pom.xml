@@ -73,7 +73,6 @@
     </dependencies>
 
     <build>
-        <!-- 🧩 Nome fixo para o JAR -->
         <finalName>WellnessQAReporter</finalName>
 
         <plugins>
@@ -85,10 +84,11 @@
                 <configuration>
                     <source>${maven.compiler.source}</source>
                     <target>${maven.compiler.target}</target>
+                    <encoding>${project.build.sourceEncoding}</encoding>
                 </configuration>
             </plugin>
 
-            <!-- Fat JAR com dependências e nome fixo -->
+            <!-- Fat JAR com dependências -->
             <plugin>
                 <groupId>org.apache.maven.plugins</groupId>
                 <artifactId>maven-shade-plugin</artifactId>
@@ -103,7 +103,8 @@
                             <finalName>WellnessQAReporter</finalName>
                             <createDependencyReducedPom>false</createDependencyReducedPom>
                             <transformers>
-                                <transformer implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
+                                <transformer
+                                        implementation="org.apache.maven.plugins.shade.resource.ManifestResourceTransformer">
                                     <mainClass>com.sysmap.wellness.main.WellnessQAMain</mainClass>
                                 </transformer>
                             </transformers>
@@ -123,6 +124,43 @@
                             <mainClass>com.sysmap.wellness.main.WellnessQAMain</mainClass>
                         </manifest>
                     </archive>
+                </configuration>
+            </plugin>
+
+            <!-- 🧾 Gerador de JavaDoc -->
+            <plugin>
+                <groupId>org.apache.maven.plugins</groupId>
+                <artifactId>maven-javadoc-plugin</artifactId>
+                <version>3.11.2</version>
+                <executions>
+                    <!-- Gera HTML navegável em docs/javadoc -->
+                    <execution>
+                        <id>generate-docs</id>
+                        <phase>prepare-package</phase>
+                        <goals>
+                            <goal>javadoc</goal>
+                        </goals>
+                    </execution>
+
+                    <!-- Gera JAR com o javadoc -->
+                    <execution>
+                        <id>attach-javadocs</id>
+                        <goals>
+                            <goal>jar</goal>
+                        </goals>
+                    </execution>
+                </executions>
+
+                <configuration>
+                    <!-- Saída definitiva na raiz do projeto -->
+                    <outputDirectory>${project.basedir}/docs/javadoc</outputDirectory>
+                    <failOnError>false</failOnError>
+                    <quiet>true</quiet>
+                    <encoding>UTF-8</encoding>
+                    <charset>UTF-8</charset>
+                    <docencoding>UTF-8</docencoding>
+                    <doctitle>${project.name} API Documentation</doctitle>
+                    <windowtitle>${project.name} - Javadoc</windowtitle>
                 </configuration>
             </plugin>
         </plugins>

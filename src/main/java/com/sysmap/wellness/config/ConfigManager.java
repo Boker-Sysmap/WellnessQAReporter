@@ -10,8 +10,8 @@ import java.util.stream.Collectors;
 /**
  * ConfigManager: lê config.properties e endpoints.properties.
  *
- * - config/config.properties  -> token, baseUrl, projects (CSV)
- * - config/endpoints.properties -> lista de endpoints (chave=boolean)
+ * - config/config.properties  - token, baseUrl, projects (CSV)
+ * - config/endpoints.properties - lista de endpoints (chave=boolean)
  *
  * Prioridades:
  *   1️⃣ endpoints.properties define endpoints ativos/inativos.

@@ -1,107 +1,124 @@
 package com.sysmap.wellness.service;
 
+import com.sysmap.wellness.config.ConfigManager;
 import com.sysmap.wellness.util.LoggerUtils;
 import com.sysmap.wellness.util.MetricsCollector;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.IOException;
+import java.nio.file.*;
 import java.util.*;
 
 /**
- * Consolida os dados brutos (cases, results, defects etc.)
- * e agora enriquece os resultados com base nos hashes dos defects.
+ * Consolida todos os arquivos JSON exportados dos endpoints da API Qase
+ * em uma estrutura unificada e genérica para uso por qualquer relatório.
  */
 public class DataConsolidator {
 
-    private final QaseClient qaseClient = new QaseClient();
+    private static final Path JSON_DIR = Path.of("output", "json");
 
-    public Map<String, JSONObject> consolidateAll(Map<String, Map<String, JSONArray>> allData) {
-        LoggerUtils.step("🧩 Iniciando consolidação dos dados...");
-        Map<String, JSONObject> consolidatedProjects = new LinkedHashMap<>();
+    /**
+     * Consolida os arquivos JSON de todos os projetos e endpoints ativos.
+     *
+     * @return Mapa consolidado no formato:
+     *         { "PROJETO": { "endpoint1": [...], "endpoint2": [...] } }
+     */
+    public Map<String, JSONObject> consolidateAll() {
+        Map<String, JSONObject> consolidated = new LinkedHashMap<>();
 
-        for (var entry : allData.entrySet()) {
-            String projectCode = entry.getKey();
-            Map<String, JSONArray> projectEndpoints = entry.getValue();
-            JSONObject consolidated = consolidateProject(projectCode, projectEndpoints);
-            consolidatedProjects.put(projectCode, consolidated);
+        List<String> projects = ConfigManager.getProjects();
+        List<String> activeEndpoints = ConfigManager.getActiveEndpoints();
+
+        LoggerUtils.divider();
+        LoggerUtils.step("📦 Consolidando dados a partir dos arquivos JSON locais...");
+        LoggerUtils.step("Projetos: " + String.join(", ", projects));
+        LoggerUtils.step("Endpoints ativos: " + String.join(", ", activeEndpoints));
+
+        for (String project : projects) {
+            JSONObject projectData = new JSONObject();
+
+            for (String endpoint : activeEndpoints) {
+                String fileName = String.format("%s_%s.json", project, endpoint);
+                Path filePath = JSON_DIR.resolve(fileName);
+
+                if (!Files.exists(filePath)) {
+                    LoggerUtils.warn("⚠️ Arquivo não encontrado: " + filePath);
+                    continue;
+                }
+
+                try {
+                    String jsonContent = Files.readString(filePath).trim();
+
+                    if (jsonContent.isBlank()) {
+                        LoggerUtils.warn("⚠️ Arquivo vazio: " + filePath);
+                        continue;
+                    }
+
+                    // Detecta estrutura base — pode ser um array puro ou um objeto
+                    JSONArray entities = parseJsonEntities(jsonContent);
+
+                    projectData.put(endpoint, entities);
+                    LoggerUtils.step(String.format("✅ %s: %d registros consolidados", fileName, entities.length()));
+                    MetricsCollector.incrementBy("jsonRecordsLoaded", entities.length());
+
+                } catch (IOException e) {
+                    LoggerUtils.error("Erro ao ler " + fileName, e);
+                } catch (Exception e) {
+                    LoggerUtils.error("Erro ao processar JSON " + fileName, e);
+                }
+            }
+
+            consolidated.put(project, projectData);
+            LoggerUtils.success(String.format("📦 Projeto %s consolidado com %d endpoints.", project, projectData.length()));
         }
 
-        LoggerUtils.success("✅ Consolidação concluída para " + consolidatedProjects.size() + " projetos.");
-        return consolidatedProjects;
-    }
-
-    private JSONObject consolidateProject(String projectCode, Map<String, JSONArray> endpoints) {
-        LoggerUtils.step("🔧 Consolidando projeto: " + projectCode);
-
-        JSONObject consolidated = new JSONObject();
-
-        consolidated.put("cases", endpoints.getOrDefault("case", new JSONArray()));
-        consolidated.put("results", endpoints.getOrDefault("result", new JSONArray()));
-        consolidated.put("defects", endpoints.getOrDefault("defect", new JSONArray()));
-        consolidated.put("suites", endpoints.getOrDefault("suite", new JSONArray()));
-
-        if (endpoints.containsKey("milestone")) {
-            consolidated.put("milestones", endpoints.get("milestone"));
-        }
-
-        enrichResultsFromDefects(projectCode, consolidated);
-
-        int totalCases = consolidated.getJSONArray("cases").length();
-        int totalResults = consolidated.getJSONArray("results").length();
-        int totalDefects = consolidated.getJSONArray("defects").length();
-
-        JSONObject stats = new JSONObject()
-                .put("casesCount", totalCases)
-                .put("resultsCount", totalResults)
-                .put("defectsCount", totalDefects)
-                .put("milestonesCount", consolidated.has("milestones")
-                        ? consolidated.getJSONArray("milestones").length() : 0);
-
-        consolidated.put("stats", stats);
-
-        LoggerUtils.success(String.format("📊 %s consolidado: %d casos, %d resultados, %d defeitos",
-                projectCode, totalCases, totalResults, totalDefects));
-
-        MetricsCollector.increment("projectsConsolidated");
-        MetricsCollector.incrementBy("casesTotal", totalCases);
-        MetricsCollector.incrementBy("resultsTotal", totalResults);
-        MetricsCollector.incrementBy("defectsTotal", totalDefects);
-
+        LoggerUtils.success("🏁 Consolidação de dados concluída com sucesso!");
         return consolidated;
     }
 
     /**
-     * 🔍 Enriquecer resultados com base nos hashes contidos nos defects.
+     * Tenta extrair o array de entidades de um JSON, independentemente do formato.
      */
-    private void enrichResultsFromDefects(String projectCode, JSONObject consolidated) {
-        JSONArray defects = consolidated.optJSONArray("defects");
-        JSONArray results = consolidated.optJSONArray("results");
-        if (defects == null || defects.isEmpty()) return;
+    private JSONArray parseJsonEntities(String jsonContent) {
+        try {
+            if (jsonContent.startsWith("[")) {
+                return new JSONArray(jsonContent);
+            }
 
-        Set<String> existingHashes = new HashSet<>();
-        for (int i = 0; i < results.length(); i++) {
-            JSONObject r = results.getJSONObject(i);
-            if (r.has("hash")) existingHashes.add(r.getString("hash"));
-        }
+            JSONObject parsed = new JSONObject(jsonContent);
 
-        for (int i = 0; i < defects.length(); i++) {
-            JSONObject defect = defects.getJSONObject(i);
-            if (!defect.has("results")) continue;
-
-            JSONArray defectResults = defect.optJSONArray("results");
-            if (defectResults == null || defectResults.isEmpty()) continue;
-
-            for (int j = 0; j < defectResults.length(); j++) {
-                String hash = defectResults.getString(j);
-                if (hash == null || existingHashes.contains(hash)) continue;
-
-                JSONObject result = qaseClient.fetchResultByHash(projectCode, hash);
-                if (result != null) {
-                    results.put(result);
-                    existingHashes.add(hash);
-                    LoggerUtils.step("➕ Result hash " + hash + " adicionado via defect.");
+            if (parsed.has("result")) {
+                Object result = parsed.get("result");
+                if (result instanceof JSONObject) {
+                    JSONObject resObj = (JSONObject) result;
+                    if (resObj.has("entities") && resObj.get("entities") instanceof JSONArray) {
+                        return resObj.getJSONArray("entities");
+                    }
+                    // fallback — qualquer array interno
+                    for (String key : resObj.keySet()) {
+                        if (resObj.get(key) instanceof JSONArray) {
+                            return resObj.getJSONArray(key);
+                        }
+                    }
+                } else if (result instanceof JSONArray) {
+                    return (JSONArray) result;
                 }
             }
+
+            // fallback total — primeiro array encontrado no objeto raiz
+            for (String key : parsed.keySet()) {
+                if (parsed.get(key) instanceof JSONArray) {
+                    return parsed.getJSONArray(key);
+                }
+            }
+
+            // nada encontrado
+            return new JSONArray();
+
+        } catch (Exception e) {
+            LoggerUtils.warn("⚠️ JSON inválido detectado (tratado como vazio)");
+            return new JSONArray();
         }
     }
 }

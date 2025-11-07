@@ -26,14 +26,16 @@ public class QaseClient {
     private final String baseUrl;
     private final String token;
 
+    // Endpoints que NÃO exigem código de projeto (são globais)
+    private static final Set<String> GLOBAL_ENDPOINTS = Set.of(
+            "attachment", "author", "custom_field", "shared_parameter", "system_field", "user"
+    );
+
     public QaseClient() {
         this.baseUrl = ConfigManager.getApiBaseUrl();
         this.token = ConfigManager.getApiToken();
     }
 
-    /**
-     * Busca todos os endpoints configurados para todos os projetos.
-     */
     public Map<String, Map<String, JSONArray>> fetchAllConfiguredData() {
         Map<String, Map<String, JSONArray>> allData = new LinkedHashMap<>();
         List<String> projects = ConfigManager.getProjects();
@@ -56,15 +58,11 @@ public class QaseClient {
         return allData;
     }
 
-    /**
-     * Faz a coleta de todos os registros de um endpoint de um projeto.
-     * Caso o endpoint seja "result", a busca é feita por cada run_id.
-     */
     public JSONArray fetchEndpoint(String project, String endpoint) {
         JSONArray aggregate = new JSONArray();
         Set<String> seen = new HashSet<>();
 
-        final int limit = 100; // máximo permitido pela API
+        final int limit = 100;
         int offset = 0;
         int page = 1;
 
@@ -73,7 +71,6 @@ public class QaseClient {
             if (endpoint.equalsIgnoreCase("result")) {
                 LoggerUtils.step("🧠 Endpoint 'result' detectado — alternando para busca por run_id...");
 
-                // Buscar runs do projeto
                 JSONArray runs = fetchEndpoint(project, "run");
                 if (runs.isEmpty()) {
                     LoggerUtils.warn("⚠️ Nenhum run encontrado para " + project + ". Pulando coleta de results.");
@@ -108,7 +105,7 @@ public class QaseClient {
                         LoggerUtils.step(String.format("✅ Run %d — página %d: %d novos (%d totais)",
                                 runId, page, newItems, aggregate.length()));
 
-                        if (items.length() < limit) break; // última página
+                        if (items.length() < limit) break;
 
                         offset += limit;
                         page++;
@@ -173,7 +170,7 @@ public class QaseClient {
 
                 LoggerUtils.step(String.format("✅ Página %d: %d novos (%d totais)", page, newItems, aggregate.length()));
 
-                if (items.length() < limit) break; // última página
+                if (items.length() < limit) break;
 
                 offset += limit;
                 page++;
@@ -192,14 +189,14 @@ public class QaseClient {
         return aggregate;
     }
 
-    /**
-     * Faz o download de uma página específica do endpoint com controle de timeout.
-     */
     private JSONArray fetchPage(String project, String endpoint, int limit, int offset, int page)
             throws IOException, SocketTimeoutException {
 
-        String urlStr = String.format("%s/%s/%s?limit=%d&offset=%d",
-                baseUrl, endpoint, project, limit, offset);
+        // 🔸 Monta a URL corretamente dependendo do tipo de endpoint
+        String urlStr = GLOBAL_ENDPOINTS.contains(endpoint)
+                ? String.format("%s/%s?limit=%d&offset=%d", baseUrl, endpoint, limit, offset)
+                : String.format("%s/%s/%s?limit=%d&offset=%d", baseUrl, endpoint, project, limit, offset);
+
         LoggerUtils.step(String.format("🔗 [Página %d] GET %s", page, urlStr));
 
         long start = System.nanoTime();
@@ -207,12 +204,10 @@ public class QaseClient {
         conn.setRequestMethod("GET");
         conn.setRequestProperty("Content-Type", "application/json");
         conn.setRequestProperty("Token", token);
-        conn.setConnectTimeout(30_000); // 30 segundos para conectar
+        conn.setConnectTimeout(30_000);
 
-        // Timeout dinâmico: até 3 minutos para "result"
         int readTimeoutMs = endpoint.equalsIgnoreCase("result") ? 300_000 : 60_000;
         conn.setReadTimeout(readTimeoutMs);
-
         conn.connect();
 
         int status = conn.getResponseCode();
@@ -236,9 +231,6 @@ public class QaseClient {
         return extractArray(parsed);
     }
 
-    /**
-     * Faz o download de uma página de resultados filtrando por run_id.
-     */
     private JSONArray fetchResultPage(String project, int runId, int limit, int offset, int page)
             throws IOException {
 
@@ -252,7 +244,7 @@ public class QaseClient {
         conn.setRequestProperty("Content-Type", "application/json");
         conn.setRequestProperty("Token", token);
         conn.setConnectTimeout(30_000);
-        conn.setReadTimeout(90_000); // result é pesado
+        conn.setReadTimeout(90_000);
         conn.connect();
 
         int status = conn.getResponseCode();
@@ -276,10 +268,6 @@ public class QaseClient {
         return extractArray(parsed);
     }
 
-    /**
-     * 🔍 Busca um único result diretamente por hash.
-     * Exemplo: GET https://api.qase.io/v1/result/FULLY/{hash}
-     */
     public JSONObject fetchResultByHash(String project, String hash) {
         String urlStr = String.format("%s/result/%s/%s", baseUrl, project, hash);
         LoggerUtils.step("🔍 Buscando result por hash em: " + urlStr);

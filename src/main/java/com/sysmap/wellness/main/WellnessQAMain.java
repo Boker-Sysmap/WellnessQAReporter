@@ -6,6 +6,7 @@ import com.sysmap.wellness.service.*;
 import com.sysmap.wellness.util.LoggerUtils;
 import com.sysmap.wellness.util.MetricsCollector;
 import org.json.JSONArray;
+import org.json.JSONObject;
 
 import java.nio.file.Path;
 import java.time.LocalDateTime;
@@ -48,7 +49,7 @@ public class WellnessQAMain {
             LoggerUtils.step("Projetos configurados: " + String.join(", ", projects));
             LoggerUtils.step("Endpoints configurados: " + String.join(", ", endpoints));
 
-            // === 2️⃣ Consulta API Qase ===
+            // === 2️⃣ Consulta API Qase e salva JSONs localmente ===
             QaseClient qaseClient = new QaseClient();
             JsonHandler jsonHandler = new JsonHandler();
 
@@ -74,9 +75,10 @@ public class WellnessQAMain {
                 LoggerUtils.divider();
             }
 
-            // === 3️⃣ Consolidação de dados ===
+            // === 3️⃣ Consolidação de dados dos JSONs locais ===
+            LoggerUtils.step("📦 Consolidando dados a partir dos arquivos JSON locais...");
             DataConsolidator consolidator = new DataConsolidator();
-            Map<String, org.json.JSONObject> consolidatedData = consolidator.consolidateAll(allData);
+            Map<String, JSONObject> consolidatedData = consolidator.consolidateAll();
 
             // === 4️⃣ Geração do relatório Excel ===
             ReportGenerator reportGenerator = new ReportGenerator();
