@@ -14,53 +14,37 @@ import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
 import java.util.*;
-import java.util.concurrent.TimeUnit;
 
 /**
- * Cliente HTTP especializado para comunicação com a <b>API Qase</b>.
+ * Cliente principal da API Qase.
+ * Responsável por coletar dados de múltiplos endpoints (case, result, defect, etc)
+ * com suporte a paginação, retry e timeout configurável.
  *
- * <p>Esta classe implementa lógica de paginação, controle de timeout,
- * retentativas automáticas (retry) com backoff exponencial e tratamento de endpoints
- * otimizados (como o endpoint {@code result}, que é consultado por {@code run_id}).</p>
+ * 🔹 Agora inclui coleta adicional de resultados (results)
+ *     via hashes encontrados em defects.results.
  *
- * <p>Ela é responsável por recuperar e agregar os dados brutos dos endpoints configurados
- * no arquivo {@code endpoints.properties} e posteriormente utilizados nos relatórios Excel.</p>
- *
- * <p><b>Recursos principais:</b></p>
- * <ul>
- *   <li>Autenticação via token (definido em {@code config.properties});</li>
- *   <li>Suporte a paginação automática com parâmetros {@code limit} e {@code offset};</li>
- *   <li>Retentativas automáticas em caso de falha de rede ou timeout (com backoff exponencial);</li>
- *   <li>Controle de duplicidade de registros baseado em chaves identificadoras (id, case_id, etc);</li>
- *   <li>Medição de métricas de performance e logging detalhado de cada requisição.</li>
- * </ul>
+ * Essa abordagem garante que todos os resultados referenciados por defeitos
+ * sejam incluídos, mesmo que não estejam vinculados diretamente a um run_id.
  */
 public class QaseClient {
 
-    /** URL base da API Qase (ex: https://api.qase.io/v1) */
     private final String baseUrl;
-
-    /** Token de autenticação configurado em {@code config.properties} */
     private final String token;
 
-    /** Endpoints globais que não exigem código de projeto na URL */
+    // Endpoints globais (não exigem código de projeto)
     private static final Set<String> GLOBAL_ENDPOINTS = Set.of(
             "attachment", "author", "custom_field", "shared_parameter", "system_field", "user"
     );
 
-    /**
-     * Construtor padrão — inicializa com base nas configurações de {@link ConfigManager}.
-     */
     public QaseClient() {
         this.baseUrl = ConfigManager.getApiBaseUrl();
         this.token = ConfigManager.getApiToken();
     }
 
     /**
-     * Executa a coleta completa de dados de todos os projetos e endpoints configurados.
+     * Faz a coleta de todos os endpoints ativos e configurados no arquivo de propriedades.
      *
-     * @return Mapa contendo os dados agregados por projeto e endpoint.
-     *         Estrutura: {@code { "PROJETO": { "endpoint1": [...], "endpoint2": [...] } }}
+     * @return Mapa de dados por projeto e endpoint.
      */
     public Map<String, Map<String, JSONArray>> fetchAllConfiguredData() {
         Map<String, Map<String, JSONArray>> allData = new LinkedHashMap<>();
@@ -85,15 +69,10 @@ public class QaseClient {
     }
 
     /**
-     * Busca os dados de um endpoint específico, aplicando paginação automática
-     * e controle de retentativas em caso de erro.
-     *
-     * <p>Se o endpoint for {@code result}, a busca é realizada por {@code run_id}
-     * (modo otimizado de coleta de resultados).</p>
-     *
-     * @param project Código do projeto (ex: FULLY, CHUBB)
-     * @param endpoint Nome do endpoint (ex: case, result, defect)
-     * @return Um {@link JSONArray} contendo os registros agregados do endpoint.
+     * Coleta os dados de um endpoint específico, com paginação e tratamento de erro.
+     * @param project Código do projeto Qase
+     * @param endpoint Nome do endpoint
+     * @return JSONArray com todos os registros agregados
      */
     public JSONArray fetchEndpoint(String project, String endpoint) {
         JSONArray aggregate = new JSONArray();
@@ -104,62 +83,92 @@ public class QaseClient {
         int page = 1;
 
         try {
-            // 🔹 Modo otimizado — busca resultados por run_id
+            // 🔹 Caso especial: coleta otimizada de "result" (por run_id + hashes)
             if (endpoint.equalsIgnoreCase("result")) {
-                LoggerUtils.step("🧠 Endpoint 'result' detectado — alternando para busca por run_id...");
+                LoggerUtils.step("🧠 Endpoint 'result' detectado — alternando para busca por run_id e hash...");
 
+                // 1️⃣ Busca normal via run_id
                 JSONArray runs = fetchEndpoint(project, "run");
                 if (runs.isEmpty()) {
                     LoggerUtils.warn("⚠️ Nenhum run encontrado para " + project + ". Pulando coleta de results.");
-                    return aggregate;
-                }
+                } else {
+                    for (int r = 0; r < runs.length(); r++) {
+                        JSONObject run = runs.getJSONObject(r);
+                        int runId = run.optInt("id", -1);
+                        if (runId == -1) continue;
 
-                for (int r = 0; r < runs.length(); r++) {
-                    JSONObject run = runs.getJSONObject(r);
-                    int runId = run.optInt("id", -1);
-                    if (runId == -1) continue;
+                        LoggerUtils.step(String.format("📂 Coletando resultados do run #%d (%s)", runId, project));
 
-                    LoggerUtils.step(String.format("📂 Coletando resultados do run #%d (%s)", runId, project));
+                        offset = 0;
+                        page = 1;
 
-                    offset = 0;
-                    page = 1;
+                        while (true) {
+                            JSONArray items = fetchResultPage(project, runId, limit, offset, page);
+                            if (items.isEmpty()) break;
 
-                    while (true) {
-                        JSONArray items = fetchResultPage(project, runId, limit, offset, page);
-                        if (items.isEmpty()) break;
-
-                        int newItems = 0;
-                        for (int i = 0; i < items.length(); i++) {
-                            JSONObject obj = items.getJSONObject(i);
-                            String id = extractId(obj);
-                            if (id == null) id = UUID.randomUUID().toString();
-                            if (seen.add(id)) {
-                                aggregate.put(obj);
-                                newItems++;
+                            int newItems = 0;
+                            for (int i = 0; i < items.length(); i++) {
+                                JSONObject obj = items.getJSONObject(i);
+                                String id = extractId(obj);
+                                if (id == null) id = UUID.randomUUID().toString();
+                                if (seen.add(id)) {
+                                    aggregate.put(obj);
+                                    newItems++;
+                                }
                             }
+
+                            LoggerUtils.step(String.format("✅ Run %d — página %d: %d novos (%d totais)",
+                                    runId, page, newItems, aggregate.length()));
+
+                            if (items.length() < limit) break;
+                            offset += limit;
+                            page++;
+                            Thread.sleep(200);
                         }
-
-                        LoggerUtils.step(String.format("✅ Run %d — página %d: %d novos (%d totais)",
-                                runId, page, newItems, aggregate.length()));
-
-                        if (items.length() < limit) break;
-
-                        offset += limit;
-                        page++;
-                        Thread.sleep(200);
                     }
                 }
 
-                LoggerUtils.success(String.format("📦 %d resultados agregados (modo otimizado por run_id)", aggregate.length()));
+                // 2️⃣ Coleta adicional de results via hashes referenciados em defects
+                LoggerUtils.step("🔍 Iniciando coleta adicional de results via defect.results.hash ...");
+
+                JSONArray defects = fetchEndpoint(project, "defect");
+                int addedByHash = 0;
+
+                for (int d = 0; d < defects.length(); d++) {
+                    JSONObject defect = defects.getJSONObject(d);
+                    if (!defect.has("results")) continue;
+
+                    JSONArray resultRefs = defect.optJSONArray("results");
+                    if (resultRefs == null) continue;
+
+                    for (int i = 0; i < resultRefs.length(); i++) {
+                        String hash = resultRefs.optString(i);
+                        if (hash == null || hash.isEmpty()) continue;
+                        if (!seen.add(hash)) continue; // já coletado
+
+                        JSONObject resultByHash = fetchResultByHash(project, hash);
+                        if (resultByHash != null) {
+                            aggregate.put(resultByHash);
+                            addedByHash++;
+                        }
+                    }
+                }
+
+                if (addedByHash > 0)
+                    LoggerUtils.success(String.format("📦 %d resultados adicionais coletados via hash.", addedByHash));
+                else
+                    LoggerUtils.info("ℹ️ Nenhum novo result encontrado via hash.");
+
+                MetricsCollector.incrementBy("apiResultsByHashFetched", addedByHash);
                 MetricsCollector.incrementBy("apiRecordsFetched", aggregate.length());
                 return aggregate;
             }
 
-            // 🔁 Paginação padrão para outros endpoints
+            // 🔁 Paginação para outros endpoints
             while (true) {
                 boolean success = false;
                 int retries = 0;
-                int maxRetries = endpoint.equalsIgnoreCase("result") ? 5 : 3;
+                int maxRetries = 3;
                 JSONArray items = new JSONArray();
 
                 while (!success && retries < maxRetries) {
@@ -189,29 +198,19 @@ public class QaseClient {
                     break;
                 }
 
-                if (items.isEmpty()) {
-                    LoggerUtils.info("Nenhum item encontrado, encerrando paginação.");
-                    break;
-                }
+                if (items.isEmpty()) break;
 
-                int newItems = 0;
                 for (int i = 0; i < items.length(); i++) {
                     JSONObject obj = items.getJSONObject(i);
                     String id = extractId(obj);
                     if (id == null) id = UUID.randomUUID().toString();
-                    if (seen.add(id)) {
-                        aggregate.put(obj);
-                        newItems++;
-                    }
+                    if (seen.add(id)) aggregate.put(obj);
                 }
 
-                LoggerUtils.step(String.format("✅ Página %d: %d novos (%d totais)", page, newItems, aggregate.length()));
-
                 if (items.length() < limit) break;
-
                 offset += limit;
                 page++;
-                Thread.sleep(250);
+                Thread.sleep(200);
             }
 
         } catch (InterruptedException e) {
@@ -226,35 +225,19 @@ public class QaseClient {
         return aggregate;
     }
 
-    /**
-     * Executa uma chamada HTTP paginada comum para um endpoint.
-     *
-     * @param project Código do projeto
-     * @param endpoint Nome do endpoint
-     * @param limit Quantidade máxima de registros por página
-     * @param offset Deslocamento (offset) para paginação
-     * @param page Número da página (apenas para logs)
-     * @return {@link JSONArray} com os dados da página
-     * @throws IOException Erro de comunicação HTTP
-     * @throws SocketTimeoutException Timeout de leitura ou conexão
-     */
+    /** Coleta uma página genérica de um endpoint com paginação */
     private JSONArray fetchPage(String project, String endpoint, int limit, int offset, int page)
-            throws IOException, SocketTimeoutException {
-
+            throws IOException {
         String urlStr = GLOBAL_ENDPOINTS.contains(endpoint)
                 ? String.format("%s/%s?limit=%d&offset=%d", baseUrl, endpoint, limit, offset)
                 : String.format("%s/%s/%s?limit=%d&offset=%d", baseUrl, endpoint, project, limit, offset);
 
-        LoggerUtils.step(String.format("🔗 [Página %d] GET %s", page, urlStr));
-
-        long start = System.nanoTime();
         HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
         conn.setRequestMethod("GET");
         conn.setRequestProperty("Content-Type", "application/json");
         conn.setRequestProperty("Token", token);
         conn.setConnectTimeout(30_000);
-        conn.setReadTimeout(endpoint.equalsIgnoreCase("result") ? 300_000 : 60_000);
-        conn.connect();
+        conn.setReadTimeout(60_000);
 
         int status = conn.getResponseCode();
         StringBuilder sb = new StringBuilder();
@@ -266,42 +249,25 @@ public class QaseClient {
         }
         conn.disconnect();
 
-        long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
-        LoggerUtils.step(String.format("⏱ Página %d concluída em %d ms", page, elapsed));
-
-        if (status < 200 || status >= 300) {
+        if (status < 200 || status >= 300)
             throw new IOException("HTTP " + status + " ao acessar " + endpoint);
-        }
 
-        return extractArray(new JSONObject(sb.toString()));
+        JSONObject parsed = new JSONObject(sb.toString());
+        return extractArray(parsed);
     }
 
-    /**
-     * Busca uma página de resultados (result) filtrada por {@code run_id}.
-     *
-     * @param project Código do projeto
-     * @param runId ID do run
-     * @param limit Limite de registros por página
-     * @param offset Offset para paginação
-     * @param page Número da página (para logs)
-     * @return {@link JSONArray} contendo os resultados
-     * @throws IOException Em caso de erro HTTP
-     */
+    /** Coleta uma página de resultados de um run específico */
     private JSONArray fetchResultPage(String project, int runId, int limit, int offset, int page)
             throws IOException {
-
         String urlStr = String.format("%s/result/%s?run=%d&limit=%d&offset=%d",
                 baseUrl, project, runId, limit, offset);
-        LoggerUtils.step(String.format("🔗 [Run %d - Página %d] GET %s", runId, page, urlStr));
 
-        long start = System.nanoTime();
         HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
         conn.setRequestMethod("GET");
         conn.setRequestProperty("Content-Type", "application/json");
         conn.setRequestProperty("Token", token);
         conn.setConnectTimeout(30_000);
         conn.setReadTimeout(90_000);
-        conn.connect();
 
         int status = conn.getResponseCode();
         StringBuilder sb = new StringBuilder();
@@ -313,27 +279,16 @@ public class QaseClient {
         }
         conn.disconnect();
 
-        long elapsed = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - start);
-        LoggerUtils.step(String.format("⏱ Run %d - página %d concluída em %d ms", runId, page, elapsed));
-
-        if (status < 200 || status >= 300) {
+        if (status < 200 || status >= 300)
             throw new IOException("HTTP " + status + " ao acessar result/" + project);
-        }
 
-        return extractArray(new JSONObject(sb.toString()));
+        JSONObject parsed = new JSONObject(sb.toString());
+        return extractArray(parsed);
     }
 
-    /**
-     * Busca um registro específico do endpoint {@code result} pelo hash único.
-     *
-     * @param project Código do projeto
-     * @param hash Identificador único do resultado
-     * @return {@link JSONObject} com os dados do resultado, ou {@code null} se não encontrado.
-     */
+    /** Busca um único result via hash (usado para relacionamentos de defeitos) */
     public JSONObject fetchResultByHash(String project, String hash) {
         String urlStr = String.format("%s/result/%s/%s", baseUrl, project, hash);
-        LoggerUtils.step("🔍 Buscando result por hash em: " + urlStr);
-
         try {
             HttpURLConnection conn = (HttpURLConnection) new URL(urlStr).openConnection();
             conn.setRequestMethod("GET");
@@ -341,7 +296,6 @@ public class QaseClient {
             conn.setRequestProperty("Token", token);
             conn.setConnectTimeout(15_000);
             conn.setReadTimeout(60_000);
-            conn.connect();
 
             int status = conn.getResponseCode();
             StringBuilder sb = new StringBuilder();
@@ -358,8 +312,6 @@ public class QaseClient {
                 if (parsed.has("result") && parsed.get("result") instanceof JSONObject) {
                     return parsed.getJSONObject("result");
                 }
-            } else {
-                LoggerUtils.warn("⚠️ HTTP " + status + " ao buscar result hash " + hash);
             }
 
         } catch (Exception e) {
@@ -368,7 +320,7 @@ public class QaseClient {
         return null;
     }
 
-    /** Extrai o array de dados principal de um JSON retornado pela API. */
+    /** Extrai a lista de entidades de um JSON da API */
     private JSONArray extractArray(JSONObject parsed) {
         if (parsed == null) return new JSONArray();
         if (parsed.has("result")) {
@@ -388,9 +340,9 @@ public class QaseClient {
         return new JSONArray();
     }
 
-    /** Retorna um identificador único para o objeto, com base em campos conhecidos. */
+    /** Extrai um ID genérico de um objeto JSON */
     private String extractId(JSONObject o) {
-        String[] keys = {"id", "case_id", "result_id", "run_id", "defect_id"};
+        String[] keys = {"id", "case_id", "result_id", "run_id", "defect_id", "hash"};
         for (String k : keys) {
             if (o.has(k) && !o.isNull(k)) return String.valueOf(o.get(k));
         }
