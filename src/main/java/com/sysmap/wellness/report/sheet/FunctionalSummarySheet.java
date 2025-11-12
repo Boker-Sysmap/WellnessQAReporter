@@ -6,20 +6,27 @@ import com.sysmap.wellness.utils.MetricsCollector;
 import org.apache.poi.ss.usermodel.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
-
 import java.util.Map;
 
 /**
  * Cria a aba "Resumo por Funcionalidade" do relatório Excel,
  * aplicando estilos padronizados via {@link ReportStyleManager}.
+ * Agora suporta múltiplos projetos, com nome da aba definido dinamicamente.
  */
 public class FunctionalSummarySheet {
 
-    public void create(Workbook wb, Map<String, JSONObject> processedData) {
-        LoggerUtils.step("📊 Criando planilha: Resumo por Funcionalidade");
+    /**
+     * Cria a planilha de resumo funcional.
+     *
+     * @param wb            workbook destino
+     * @param processedData dados processados (por projeto)
+     * @param sheetName     nome da aba no Excel (ex: "Fully – Resumo Funcional")
+     */
+    public void create(Workbook wb, Map<String, JSONObject> processedData, String sheetName) {
+        LoggerUtils.step("📊 Criando planilha: " + sheetName);
 
         ReportStyleManager styles = ReportStyleManager.from(wb);
-        Sheet sheet = wb.createSheet("Resumo por Funcionalidade");
+        Sheet sheet = wb.createSheet(sheetName);
         Row header = sheet.createRow(0);
 
         String[] cols = {
@@ -148,6 +155,6 @@ public class FunctionalSummarySheet {
             globalRow.getCell(c).setCellStyle(styles.get("total"));
 
         MetricsCollector.increment("functionalSummarySheetsCreated");
-        LoggerUtils.success("✔ Planilha 'Resumo por Funcionalidade' criada com sucesso.");
+        LoggerUtils.success("✔ Planilha '" + sheetName + "' criada com sucesso.");
     }
 }
