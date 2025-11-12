@@ -2,40 +2,21 @@ package com.sysmap.wellness.utils;
 
 import java.time.LocalDateTime;
 import java.time.format.DateTimeFormatter;
+import java.util.concurrent.ConcurrentHashMap;
+import java.util.Map;
 
 /**
  * Classe utilitária para registro de logs coloridos e legíveis no console.
- *
- * <p>Fornece métodos estáticos para exibição padronizada de mensagens de log
- * em diferentes níveis (informação, sucesso, aviso, erro, etc.), incluindo
- * carimbo de hora e cores ANSI para fácil leitura.</p>
- *
- * <p>Este utilitário é utilizado em praticamente todas as classes do projeto
- * <b>WellnessQA</b>, garantindo consistência na saída de logs durante
- * a execução e geração de relatórios.</p>
- *
- * <h3>Recursos principais:</h3>
- * <ul>
- *   <li>Colorização de mensagens com códigos ANSI (compatível com terminais modernos)</li>
- *   <li>Timestamp automático no formato <code>HH:mm:ss</code></li>
- *   <li>Métodos separados para cada nível de log (INFO, STEP, OK, WARN, ERROR, METRIC)</li>
- *   <li>Impressão de exceções (stack trace) quando aplicável</li>
- * </ul>
- *
- * <h3>Exemplo de uso:</h3>
- * <pre>{@code
- * LoggerUtils.info("Iniciando coleta de dados...");
- * LoggerUtils.success("Processo concluído com sucesso!");
- * LoggerUtils.warn("Arquivo de configuração não encontrado.");
- * LoggerUtils.error("Erro ao conectar à API", e);
- * }</pre>
+ * <p>
+ * Agora inclui suporte a tempo de execução, progresso percentual e seções nomeadas.
+ * </p>
  *
  * @author
- * @version 1.0
+ * @version 2.0
  */
 public class LoggerUtils {
 
-    // === Códigos ANSI para cores no terminal ===
+    // === Códigos ANSI para cores ===
     private static final String RESET = "\u001B[0m";
     private static final String GREEN = "\u001B[32m";
     private static final String BLUE = "\u001B[34m";
@@ -43,94 +24,143 @@ public class LoggerUtils {
     private static final String RED = "\u001B[31m";
     private static final String CYAN = "\u001B[36m";
     private static final String MAGENTA = "\u001B[35m";
+    private static final String WHITE = "\u001B[37m";
 
-    /** Formato padrão para exibição do horário nos logs (HH:mm:ss). */
+    /** Formato padrão de horário */
     private static final DateTimeFormatter TIME_FMT = DateTimeFormatter.ofPattern("HH:mm:ss");
 
-    /**
-     * Retorna o horário atual formatado para exibição no início de cada mensagem de log.
-     *
-     * @return String contendo o horário atual entre colchetes (ex: [14:23:05])
-     */
+    /** Armazena timers ativos (início de medição) */
+    private static final Map<String, Long> TIMERS = new ConcurrentHashMap<>();
+
     private static String now() {
         return "[" + LocalDateTime.now().format(TIME_FMT) + "]";
     }
 
-    /**
-     * Imprime uma linha divisória no console para separar blocos de logs.
-     */
     public static void divider() {
         System.out.println(CYAN + "-------------------------------------------------------------" + RESET);
     }
 
-    /**
-     * Exibe uma mensagem informativa (nível INFO).
-     *
-     * @param msg Mensagem a ser exibida
-     */
+    // ===========================================================
+    //  LOGS PADRÃO
+    // ===========================================================
+
     public static void info(String msg) {
         System.out.println(now() + " " + BLUE + "[INFO] " + RESET + msg);
     }
 
-    /**
-     * Exibe uma mensagem indicando o andamento de uma etapa (nível STEP).
-     *
-     * @param msg Descrição da etapa atual
-     */
     public static void step(String msg) {
         System.out.println(now() + " " + MAGENTA + "[STEP] " + RESET + msg);
     }
 
-    /**
-     * Exibe uma mensagem de sucesso (nível OK).
-     *
-     * @param msg Mensagem de confirmação de sucesso
-     */
     public static void success(String msg) {
         System.out.println(now() + " " + GREEN + "[OK] " + RESET + msg);
     }
 
-    /**
-     * Exibe uma mensagem de aviso (nível WARN).
-     *
-     * @param msg Mensagem de alerta ou atenção
-     */
     public static void warn(String msg) {
         System.out.println(now() + " " + YELLOW + "[WARN] " + RESET + msg);
     }
 
-    /**
-     * Exibe uma mensagem de erro (nível ERROR) com exceção associada.
-     *
-     * @param msg Mensagem de erro a ser exibida
-     * @param t   Exceção relacionada (pode ser {@code null})
-     */
-    public static void error(String msg, Throwable t) {
-        System.out.println(now() + " " + RED + "[ERROR] " + RESET + msg);
-        if (t != null) {
-            t.printStackTrace(System.out);
-        }
-    }
-
-    /**
-     * Exibe uma mensagem de erro simples, sem exceção associada.
-     *
-     * @param msg Mensagem de erro
-     */
     public static void error(String msg) {
         System.out.println(now() + " " + RED + "[ERROR] " + RESET + msg);
     }
 
-    /**
-     * Exibe uma métrica ou estatística no console.
-     *
-     * <p>Utilizado para fins de monitoramento de desempenho e coleta
-     * de métricas durante a execução.</p>
-     *
-     * @param key   Nome ou chave da métrica
-     * @param value Valor associado à métrica
-     */
+    public static void error(String msg, Throwable t) {
+        System.out.println(now() + " " + RED + "[ERROR] " + RESET + msg);
+        if (t != null) t.printStackTrace(System.out);
+    }
+
     public static void metric(String key, Object value) {
         System.out.println(now() + " " + CYAN + "[METRIC] " + RESET + key + " = " + value);
+    }
+
+    // ===========================================================
+    //  NOVOS RECURSOS
+    // ===========================================================
+
+    /**
+     * Marca o início de uma medição de tempo.
+     * @param tag Identificador único (ex: "FULLY/result")
+     */
+    public static void startTimer(String tag) {
+        TIMERS.put(tag, System.nanoTime());
+    }
+
+    /**
+     * Marca o fim de uma medição e mostra a duração no log.
+     * @param tag Identificador usado em startTimer()
+     * @param message Mensagem a ser exibida junto do tempo
+     */
+    public static void endTimer(String tag, String message) {
+        Long start = TIMERS.remove(tag);
+        if (start == null) {
+            warn("Timer '" + tag + "' não iniciado.");
+            return;
+        }
+        long elapsedMs = (System.nanoTime() - start) / 1_000_000;
+        double elapsedSec = elapsedMs / 1000.0;
+        String formatted = elapsedSec >= 1
+                ? String.format("%.2fs", elapsedSec)
+                : String.format("%dms", elapsedMs);
+        System.out.println(now() + " " + CYAN + "[TIME] " + RESET + message + " (" + formatted + ")");
+    }
+
+    /**
+     * Loga um tempo de execução simples sem precisar de startTimer().
+     */
+    public static void time(String msg, long startTimeNs) {
+        long elapsedMs = (System.nanoTime() - startTimeNs) / 1_000_000;
+        double elapsedSec = elapsedMs / 1000.0;
+        String formatted = elapsedSec >= 1
+                ? String.format("%.2fs", elapsedSec)
+                : String.format("%dms", elapsedMs);
+        System.out.println(now() + " " + CYAN + "[TIME] " + RESET + msg + " (" + formatted + ")");
+    }
+
+    /**
+     * Exibe um progresso percentual (0–100%).
+     */
+    public static void progress(String context, int current, int total) {
+        int percent = total > 0 ? (int) ((current * 100.0) / total) : 0;
+        System.out.println(now() + " " + WHITE + "[PROGRESS] " + RESET +
+                context + " → " + current + "/" + total + " (" + percent + "%)");
+    }
+
+    /**
+     * Exibe uma nova seção destacada visualmente.
+     */
+    public static void section(String title) {
+        divider();
+        System.out.println(MAGENTA + "====================[ " + title + " ]====================" + RESET);
+    }
+
+    /**
+     * Loga o tamanho de um arquivo ou payload (em bytes ou KB/MB).
+     */
+    public static void size(String label, long bytes) {
+        String formatted;
+        if (bytes < 1024) {
+            formatted = bytes + " B";
+        } else if (bytes < 1024 * 1024) {
+            formatted = String.format("%.1f KB", bytes / 1024.0);
+        } else {
+            formatted = String.format("%.2f MB", bytes / (1024.0 * 1024.0));
+        }
+        System.out.println(now() + " " + CYAN + "[SIZE] " + RESET + label + " = " + formatted);
+    }
+
+    /**
+     * Exibe mensagem com tag de origem da classe.
+     */
+    public static void logWithSource(String source, String level, String msg) {
+        String color;
+        switch (level.toUpperCase()) {
+            case "OK": color = GREEN; break;
+            case "STEP": color = MAGENTA; break;
+            case "WARN": color = YELLOW; break;
+            case "ERROR": color = RED; break;
+            default: color = BLUE;
+        }
+        System.out.println(now() + " " + color + "[" + level + "]" + RESET +
+                " [" + source + "] " + msg);
     }
 }

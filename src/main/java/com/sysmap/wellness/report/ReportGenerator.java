@@ -25,7 +25,9 @@ import java.util.*;
 public class ReportGenerator {
 
     public void generateReport(Map<String, JSONObject> consolidatedData, Path outputPath) {
-        long start = System.currentTimeMillis();
+        long globalStart = System.nanoTime();
+        LoggerUtils.section("GERAÇÃO DE RELATÓRIO FINAL");
+        LoggerUtils.startTimer("report");
 
         try {
             // === 1️⃣ Diretório de saída ===
@@ -35,47 +37,63 @@ public class ReportGenerator {
             Path finalPath = reportsDir.resolve(outputPath.getFileName());
             LoggerUtils.step("🧩 Gerando relatório final: " + finalPath.getFileName());
 
-            // === 2️⃣ Serviços ===
+            // === 2️⃣ Inicialização dos serviços ===
             FunctionalSummaryService summaryService = new FunctionalSummaryService();
             DefectAnalyticalService defectService = new DefectAnalyticalService();
             KPIService kpiService = new KPIService();
 
-            // Mantém KPIs de todos os projetos para o painel consolidado
             Map<String, List<KPIData>> kpisByProject = new LinkedHashMap<>();
+            int totalProjects = consolidatedData.size();
+            int currentProject = 0;
 
             try (XSSFWorkbook wb = new XSSFWorkbook()) {
 
-                // === 3️⃣ Painel Consolidado (será movido para o topo depois) ===
-                // Só é possível gerar depois de ter os KPIs de todos os projetos,
-                // então primeiro coletamos os dados individuais.
+                // === 3️⃣ Geração das abas por projeto ===
                 for (Map.Entry<String, JSONObject> entry : consolidatedData.entrySet()) {
+                    long projectStart = System.nanoTime();
                     String projectCode = entry.getKey();
                     JSONObject projectData = entry.getValue();
+                    currentProject++;
 
-                    LoggerUtils.step("\n📊 Gerando abas para o projeto: " + projectCode);
+                    LoggerUtils.section("📊 Projeto " + projectCode + " (" + currentProject + "/" + totalProjects + ")");
+                    LoggerUtils.startTimer(projectCode);
 
                     // --- KPIs Executivos ---
+                    LoggerUtils.step("Calculando KPIs executivos...");
                     List<KPIData> kpis = kpiService.calculateKPIs(projectData, projectCode);
                     kpisByProject.put(projectCode, kpis);
                     ExecutiveKPISheet.create(wb, kpis, projectCode + " – Resumo Executivo");
+                    LoggerUtils.success("Planilha 'Resumo Executivo' criada.");
 
                     // --- Resumo Funcional ---
+                    LoggerUtils.step("Gerando Resumo Funcional...");
                     Map<String, JSONObject> summary = summaryService.prepareData(Map.of(projectCode, projectData));
                     new FunctionalSummarySheet().create(wb, summary, projectCode + " – Resumo Funcional");
+                    LoggerUtils.success("Planilha 'Resumo Funcional' criada.");
 
                     // --- Defeitos Analítico ---
+                    LoggerUtils.step("Gerando Defeitos Analítico...");
                     Map<String, JSONArray> defects = defectService.prepareData(Map.of(projectCode, projectData));
                     new DefectAnalyticalReportSheet().create(wb, defects, projectCode + " – Defeitos Analítico");
+                    LoggerUtils.success("Planilha 'Defeitos Analítico' criada.");
+
+                    LoggerUtils.endTimer(projectCode, "Projeto " + projectCode + " concluído");
+                    LoggerUtils.progress("Progresso geral", currentProject, totalProjects);
+                    LoggerUtils.time("Duração do projeto " + projectCode, projectStart);
                 }
 
                 // === 4️⃣ Painel Consolidado ===
+                LoggerUtils.section("PAINEL CONSOLIDADO");
                 if (!kpisByProject.isEmpty()) {
+                    LoggerUtils.step("Criando aba de consolidação de KPIs...");
                     ExecutiveConsolidatedSheet.create(wb, kpisByProject);
-                    wb.setSheetOrder("Painel Consolidado", 0); // exibe primeiro
-                    appendFooter(wb.getSheet("Painel Consolidado"), wb, start);
+                    wb.setSheetOrder("Painel Consolidado", 0);
+                    appendFooter(wb.getSheet("Painel Consolidado"), wb, System.currentTimeMillis());
+                    LoggerUtils.success("Painel Consolidado criado com sucesso.");
                 }
 
-                // === 5️⃣ Autoajuste de colunas ===
+                // === 5️⃣ Ajuste de colunas ===
+                LoggerUtils.step("Ajustando largura de colunas...");
                 for (int i = 0; i < wb.getNumberOfSheets(); i++) {
                     Sheet s = wb.getSheetAt(i);
                     if (s.getRow(0) != null) {
@@ -88,17 +106,24 @@ public class ReportGenerator {
                     }
                 }
 
-                // === 6️⃣ Grava o arquivo ===
+                // === 6️⃣ Gravação do arquivo ===
                 try (FileOutputStream fos = new FileOutputStream(finalPath.toFile())) {
                     wb.write(fos);
                 }
 
-                long duration = System.currentTimeMillis() - start;
-                LoggerUtils.success("✅ Relatório Excel gerado com sucesso em: " + finalPath.toAbsolutePath());
+                long durationMs = (System.nanoTime() - globalStart) / 1_000_000;
+                LoggerUtils.endTimer("report", "Relatório Excel gerado");
+                LoggerUtils.success("✅ Relatório Excel salvo em: " + finalPath.toAbsolutePath());
+                LoggerUtils.size(finalPath.getFileName().toString(), Files.size(finalPath));
+                LoggerUtils.metric("reportGenerationTimeMs", durationMs);
                 MetricsCollector.set("reportFile", finalPath.getFileName().toString());
-                MetricsCollector.set("reportGenerationTimeMs", duration);
+                MetricsCollector.set("reportGenerationTimeMs", durationMs);
 
             }
+
+            LoggerUtils.section("FINALIZAÇÃO");
+            LoggerUtils.time("Duração total do processo", globalStart);
+            LoggerUtils.success("Execução concluída sem erros.");
 
         } catch (IOException e) {
             LoggerUtils.error("💥 Erro ao gerar relatório (I/O)", e);
