@@ -11,167 +11,213 @@ import java.nio.file.*;
 import java.util.*;
 
 /**
- * Responsável por consolidar todos os arquivos JSON exportados dos endpoints da API Qase.
- * <p>
- * Esta classe lê os arquivos gerados previamente (armazenados em {@code output/json})
- * e constrói uma estrutura unificada de dados para todos os projetos e endpoints ativos,
- * permitindo que os relatórios possam operar sobre uma base de dados consolidada e uniforme.
- * </p>
+ * DataConsolidator RUN-BASED
  *
- * <p>Exemplo da estrutura retornada:</p>
- * <pre>
+ * Consolida todo o conteúdo JSON baixado pelo QaseClient, incluindo:
+ *  - cases
+ *  - suites
+ *  - defects
+ *  - runs
+ *  - run_results (crucial para descobrir funcionalidade)
+ *
+ * A estrutura final para cada projeto fica assim:
+ *
  * {
- *   "PROJECT_A": {
- *       "cases": [ ... ],
- *       "results": [ ... ],
- *       "defects": [ ... ]
- *   },
- *   "PROJECT_B": {
- *       "cases": [ ... ],
- *       "results": [ ... ]
- *   }
- * }
- * </pre>
+ *     "case": [...],
+ *     "suite": [...],
+ *     "defect": [...],
+ *     "run": [...],
  *
- * <p>Em caso de inconsistências (arquivos ausentes, vazios ou malformados),
- * a classe ignora o endpoint problemático e continua o processamento dos demais.</p>
+ *     "run_results": {
+ *         "6": [...],
+ *         "16": [...],
+ *         ...
+ *     }
+ * }
+ *
+ * Isso permite ao DefectAnalyticalService localizar a funcionalidade
+ * via:
+ *
+ *  defect.runs[0] → run_results[runId] → result.case_id → case.suite_id → suite.title
  */
 public class DataConsolidator {
 
-    /** Diretório padrão onde os arquivos JSON gerados são armazenados. */
     private static final Path JSON_DIR = Path.of("output", "json");
 
-    /**
-     * Consolida os arquivos JSON de todos os projetos e endpoints ativos definidos
-     * nos arquivos de configuração ({@code config.properties} e {@code endpoints.properties}).
-     * <p>
-     * O método percorre os projetos configurados, busca os arquivos correspondentes
-     * a cada endpoint e realiza a leitura e normalização da estrutura JSON.
-     * </p>
-     *
-     * @return Um {@link Map} contendo os dados consolidados no formato:
-     * <pre>
-     * {
-     *   "PROJETO": {
-     *       "endpoint1": [ ... ],
-     *       "endpoint2": [ ... ]
-     *   }
-     * }
-     * </pre>
-     */
     public Map<String, JSONObject> consolidateAll() {
+
+        LoggerUtils.divider();
+        LoggerUtils.step("📦 Consolidando dados a partir dos arquivos JSON locais (modo RUN-BASED)");
+
         Map<String, JSONObject> consolidated = new LinkedHashMap<>();
 
         List<String> projects = ConfigManager.getProjects();
         List<String> activeEndpoints = ConfigManager.getActiveEndpoints();
 
-        LoggerUtils.divider();
-        LoggerUtils.step("📦 Consolidando dados a partir dos arquivos JSON locais...");
-        LoggerUtils.step("Projetos: " + String.join(", ", projects));
-        LoggerUtils.step("Endpoints ativos: " + String.join(", ", activeEndpoints));
-
-        // === Loop principal: para cada projeto e endpoint ===
         for (String project : projects) {
+
+            LoggerUtils.section("🔹 Projeto: " + project);
             JSONObject projectData = new JSONObject();
 
+            // -----------------------------
+            // 1. Carregar ENDPOINTS NORMAIS
+            // -----------------------------
             for (String endpoint : activeEndpoints) {
-                String fileName = String.format("%s_%s.json", project, endpoint);
-                Path filePath = JSON_DIR.resolve(fileName);
-
-                // Ignora se o arquivo não existir
-                if (!Files.exists(filePath)) {
-                    LoggerUtils.warn("⚠️ Arquivo não encontrado: " + filePath);
-                    continue;
-                }
-
                 try {
-                    String jsonContent = Files.readString(filePath).trim();
 
-                    if (jsonContent.isBlank()) {
-                        LoggerUtils.warn("⚠️ Arquivo vazio: " + filePath);
+                    Path file = JSON_DIR.resolve(project + "_" + endpoint + ".json");
+                    if (!Files.exists(file)) {
+                        LoggerUtils.warn("⚠️ Arquivo não encontrado: " + file);
                         continue;
                     }
 
-                    // Detecta e extrai a estrutura de dados (JSONArray ou JSONObject)
-                    JSONArray entities = parseJsonEntities(jsonContent);
+                    String raw = Files.readString(file).trim();
+                    if (raw.isBlank()) continue;
 
-                    // Adiciona o endpoint consolidado ao projeto
+                    JSONArray entities = parseJsonEntities(raw);
+
+                    LoggerUtils.step(String.format("📄 %s_%s.json → %d registros",
+                            project, endpoint, entities.length()));
+
                     projectData.put(endpoint, entities);
 
-                    LoggerUtils.step(String.format("✅ %s: %d registros consolidados", fileName, entities.length()));
                     MetricsCollector.incrementBy("jsonRecordsLoaded", entities.length());
 
-                } catch (IOException e) {
-                    LoggerUtils.error("Erro ao ler " + fileName, e);
                 } catch (Exception e) {
-                    LoggerUtils.error("Erro ao processar JSON " + fileName, e);
+                    LoggerUtils.error("Erro ao processar endpoint " + endpoint + "@" + project, e);
                 }
             }
 
+            // -----------------------------------------------
+            // 2. CARREGAR TODOS OS RUN_RESULTS (super importante)
+            // -----------------------------------------------
+
+            Map<String, JSONArray> runResultsMap = new LinkedHashMap<>();
+
+            try {
+                // Identificar TODOS os arquivos run_<id>_results.json
+                DirectoryStream<Path> stream = Files.newDirectoryStream(JSON_DIR,
+                        project + "_run_*_results.json");
+
+                for (Path runFile : stream) {
+
+                    String fileName = runFile.getFileName().toString();
+                    // nome esperado: PROJECT_run_<id>_results.json
+                    String runId = extractRunId(fileName);
+
+                    if (runId == null) {
+                        LoggerUtils.warn("⚠️ Nome inválido (não extraí runId): " + fileName);
+                        continue;
+                    }
+
+                    String raw = Files.readString(runFile).trim();
+                    if (raw.isBlank()) continue;
+
+                    JSONArray runResults = parseJsonEntities(raw);
+
+                    LoggerUtils.step(String.format(
+                            "📘 %s → runId=%s → %d results",
+                            fileName, runId, runResults.length()
+                    ));
+
+                    runResultsMap.put(runId, runResults);
+                }
+
+            } catch (IOException e) {
+                LoggerUtils.error("Erro ao listar arquivos run_results", e);
+            }
+
+            // Anexa ao consolidated
+            projectData.put("run_results", new JSONObject(runResultsMap));
+
+            // -----------------------------------
+            // 3. Registro final do projeto
+            // -----------------------------------
             consolidated.put(project, projectData);
-            LoggerUtils.success(String.format("📦 Projeto %s consolidado com %d endpoints.", project, projectData.length()));
+
+            LoggerUtils.success(String.format(
+                    "📦 Projeto %s consolidado com %d endpoints + %d run_results",
+                    project,
+                    projectData.length(),
+                    runResultsMap.size()
+            ));
         }
 
-        LoggerUtils.success("🏁 Consolidação de dados concluída com sucesso!");
+        LoggerUtils.success("🏁 Consolidação (RUN-BASED) concluída.");
         return consolidated;
     }
 
-    /**
-     * Analisa o conteúdo de um arquivo JSON e tenta extrair o array principal de entidades,
-     * independentemente da estrutura de origem (objeto raiz, campo "result", "entities", etc.).
-     * <p>
-     * A lógica é tolerante e tenta múltiplas abordagens de parsing,
-     * de modo a suportar variações na estrutura retornada pela API Qase.
-     * </p>
-     *
-     * @param jsonContent Conteúdo bruto do arquivo JSON.
-     * @return Um {@link JSONArray} representando a lista de entidades extraídas.
-     *         Retorna um array vazio caso não seja possível extrair dados válidos.
-     */
-    private JSONArray parseJsonEntities(String jsonContent) {
+    // ==========================================================
+    // Helpers
+    // ==========================================================
+
+    /** Extrai runId do nome do arquivo PROJECT_run_<id>_results.json */
+    private String extractRunId(String filename) {
+
+        // FULLY_run_16_results.json
         try {
-            // Caso mais simples: o JSON é um array puro
-            if (jsonContent.startsWith("[")) {
-                return new JSONArray(jsonContent);
+            String[] parts = filename.split("_");
+
+            // parts = [0]=FULLY , [1]=run , [2]=16 , [3]=results.json
+            if (parts.length < 4) return null;
+
+            String candidate = parts[2];
+            // tirar ".json" se vier
+            if (candidate.contains(".")) {
+                candidate = candidate.substring(0, candidate.indexOf('.'));
             }
 
-            JSONObject parsed = new JSONObject(jsonContent);
-
-            // Estrutura comum: {"result": {"entities": [ ... ]}}
-            if (parsed.has("result")) {
-                Object result = parsed.get("result");
-
-                if (result instanceof JSONObject) {
-                    JSONObject resObj = (JSONObject) result;
-
-                    if (resObj.has("entities") && resObj.get("entities") instanceof JSONArray) {
-                        return resObj.getJSONArray("entities");
-                    }
-
-                    // Fallback: qualquer outro array dentro do objeto "result"
-                    for (String key : resObj.keySet()) {
-                        if (resObj.get(key) instanceof JSONArray) {
-                            return resObj.getJSONArray(key);
-                        }
-                    }
-                } else if (result instanceof JSONArray) {
-                    return (JSONArray) result;
-                }
-            }
-
-            // Fallback: primeiro array encontrado no objeto raiz
-            for (String key : parsed.keySet()) {
-                if (parsed.get(key) instanceof JSONArray) {
-                    return parsed.getJSONArray(key);
-                }
-            }
-
-            // Nenhum array encontrado — retorna vazio
-            return new JSONArray();
+            return candidate;
 
         } catch (Exception e) {
-            LoggerUtils.warn("⚠️ JSON inválido detectado (tratado como vazio)");
-            return new JSONArray();
+            return null;
         }
+    }
+
+    /** JSON tolerant parser */
+    private JSONArray parseJsonEntities(String raw) {
+        try {
+            raw = raw.trim();
+
+            // Caso seja array puro
+            if (raw.startsWith("[")) {
+                return new JSONArray(raw);
+            }
+
+            JSONObject parsed = new JSONObject(raw);
+
+            // Caso mais comum: result.entities
+            if (parsed.has("result")) {
+                Object r = parsed.get("result");
+
+                if (r instanceof JSONObject) {
+                    JSONObject ro = (JSONObject) r;
+
+                    if (ro.has("entities") && ro.get("entities") instanceof JSONArray)
+                        return ro.getJSONArray("entities");
+
+                    // fallback: qualquer array dentro de result
+                    for (String key : ro.keySet()) {
+                        if (ro.get(key) instanceof JSONArray)
+                            return ro.getJSONArray(key);
+                    }
+                }
+
+                if (r instanceof JSONArray) {
+                    return (JSONArray) r;
+                }
+            }
+
+            // fallback generalizado
+            for (String key : parsed.keySet()) {
+                if (parsed.get(key) instanceof JSONArray)
+                    return parsed.getJSONArray(key);
+            }
+
+        } catch (Exception e) {
+            LoggerUtils.warn("⚠️ JSON inválido → retornando array vazio");
+        }
+
+        return new JSONArray();
     }
 }

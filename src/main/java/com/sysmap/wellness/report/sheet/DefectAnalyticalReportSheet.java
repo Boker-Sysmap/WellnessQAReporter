@@ -7,6 +7,7 @@ import com.sysmap.wellness.utils.datetime.WorkSchedule;
 import org.apache.poi.ss.usermodel.*;
 import org.json.JSONArray;
 import org.json.JSONObject;
+
 import java.time.*;
 import java.time.format.DateTimeFormatter;
 import java.util.*;
@@ -16,8 +17,10 @@ import java.util.*;
  * Agora com nome de aba dinâmico por projeto.
  */
 public class DefectAnalyticalReportSheet {
+
     private static final DateTimeFormatter OUTPUT_FORMATTER =
             DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm");
+
     private static final WorkSchedule workSchedule = new WorkSchedule();
     private static final BusinessTimeCalculator businessTimeCalculator =
             new BusinessTimeCalculator(workSchedule);
@@ -43,46 +46,69 @@ public class DefectAnalyticalReportSheet {
         }
 
         int totalDefects = 0;
-        List<String> projects = new ArrayList<>(dataByProject.keySet());
+        List<String> projects = new ArrayList<String>(dataByProject.keySet());
         Collections.sort(projects);
 
         for (String projectCode : projects) {
             JSONArray defectsArray = dataByProject.get(projectCode);
-            if (defectsArray == null || defectsArray.isEmpty()) continue;
+            if (defectsArray == null || defectsArray.length() == 0) continue;
 
             for (int i = 0; i < defectsArray.length(); i++) {
                 JSONObject defect = defectsArray.getJSONObject(i);
                 Row row = sheet.createRow(rowNum++);
                 int col = 0;
 
+                // Projeto
                 createStyledCell(row, col++, projectCode, styles.get("left"));
+                // Funcionalidade
                 createStyledCell(row, col++, defect.optString("suite", "Não identificada"), styles.get("left"));
+                // Título
                 createStyledCell(row, col++, defect.optString("title", ""), styles.get("left"));
+                // Ticket
                 createStyledCell(row, col++, defect.optString("ticket", "N/A"), styles.get("left"));
+                // Status
                 createStyledCell(row, col++, defect.optString("status", ""), styles.get("center"));
+                // Severidade
                 createStyledCell(row, col++, defect.optString("severity", ""), styles.get("center"));
+                // Criado em
                 createStyledCell(row, col++, formatDate(defect.optString("created_at", "")), styles.get("center"));
+                // Reportado por
                 createStyledCell(row, col++, defect.optString("reported_by", "Desconhecido"), styles.get("left"));
-                createStyledCell(row, col++, formatDate(defect.optString("report_date_iso", "")), styles.get("center"));
 
+                // Reportado em (usa report_date_iso)
                 String reportDateIso = defect.optString("report_date_iso", "");
+                createStyledCell(row, col++, formatDate(reportDateIso), styles.get("center"));
+
+                // Resolvido em (data resolvida)
                 String resolvedAtIso = defect.optString("resolved_at", "");
-                String openTime = "";
-                if ((resolvedAtIso == null || resolvedAtIso.isBlank())
-                        && reportDateIso != null && !reportDateIso.isBlank()) {
-                    LocalDateTime start = parseIsoToLocalDateTime(reportDateIso);
-                    LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
-                    if (start != null && now.isAfter(start)) {
-                        openTime = businessTimeCalculator.calculateBusinessTime(start, now);
+
+                // Tempo em aberto – prioriza valor vindo do serviço (open_time)
+                String openTime = defect.optString("open_time", "");
+                if (openTime == null || openTime.trim().isEmpty()) {
+                    if ((resolvedAtIso == null || resolvedAtIso.trim().isEmpty()) &&
+                            reportDateIso != null && !reportDateIso.trim().isEmpty()) {
+
+                        LocalDateTime start = parseIsoToLocalDateTime(reportDateIso);
+                        LocalDateTime now = LocalDateTime.now(ZoneId.systemDefault());
+
+                        if (start != null && now.isAfter(start)) {
+                            openTime = businessTimeCalculator.calculateBusinessTime(start, now);
+                        }
                     }
                 }
                 createStyledCell(row, col++, openTime, styles.get("center"));
+
+                // Resolvido em (data)
                 createStyledCell(row, col++, formatDate(resolvedAtIso), styles.get("center"));
 
-                String resolutionTime = "";
-                if (resolvedAtIso != null && !resolvedAtIso.isBlank()
-                        && reportDateIso != null && !reportDateIso.isBlank()) {
-                    resolutionTime = calculateDeltaHHmm(reportDateIso, resolvedAtIso);
+                // Tempo de resolução – prioriza valor vindo do serviço (resolution_time)
+                String resolutionTime = defect.optString("resolution_time", "");
+                if (resolutionTime == null || resolutionTime.trim().isEmpty()) {
+                    if (resolvedAtIso != null && !resolvedAtIso.trim().isEmpty() &&
+                            reportDateIso != null && !reportDateIso.trim().isEmpty()) {
+
+                        resolutionTime = calculateDeltaHHmm(reportDateIso, resolvedAtIso);
+                    }
                 }
                 createStyledCell(row, col++, resolutionTime, styles.get("center"));
 
@@ -90,7 +116,11 @@ public class DefectAnalyticalReportSheet {
             }
         }
 
-        ReportStyleManager.autoSizeColumnsWithPadding(sheet, headers.length, ReportStyleManager.getDefaultPadding());
+        ReportStyleManager.autoSizeColumnsWithPadding(
+                sheet,
+                headers.length,
+                ReportStyleManager.getDefaultPadding()
+        );
         LoggerUtils.success("📊 Planilha '" + sheetName + "' criada (" + totalDefects + " registros).");
     }
 
@@ -101,10 +131,12 @@ public class DefectAnalyticalReportSheet {
     }
 
     private String formatDate(String isoDate) {
-        if (isoDate == null || isoDate.isBlank()) return "";
+        if (isoDate == null || isoDate.trim().isEmpty()) return "";
         try {
             OffsetDateTime odt = OffsetDateTime.parse(isoDate);
-            LocalDateTime ldt = odt.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime();
+            LocalDateTime ldt = odt.toInstant()
+                    .atZone(ZoneId.systemDefault())
+                    .toLocalDateTime();
             return ldt.format(OUTPUT_FORMATTER);
         } catch (Exception e) {
             return "";
@@ -124,10 +156,12 @@ public class DefectAnalyticalReportSheet {
     }
 
     private LocalDateTime parseIsoToLocalDateTime(String iso) {
-        if (iso == null || iso.isBlank()) return null;
+        if (iso == null || iso.trim().isEmpty()) return null;
         try {
             OffsetDateTime odt = OffsetDateTime.parse(iso);
-            return odt.toInstant().atZone(ZoneId.systemDefault()).toLocalDateTime();
+            return odt.toInstant()
+                    .atZone(ZoneId.systemDefault())
+                    .toLocalDateTime();
         } catch (Exception e) {
             try {
                 return LocalDateTime.parse(iso);

@@ -1,108 +1,154 @@
 package com.sysmap.wellness.report.sheet;
 
 import com.sysmap.wellness.report.service.model.KPIData;
-import com.sysmap.wellness.report.style.ReportStyleManager;
+import com.sysmap.wellness.utils.LoggerUtils;
 import org.apache.poi.ss.usermodel.*;
-import org.apache.poi.ss.util.CellRangeAddress;
-import org.apache.poi.xssf.usermodel.*;
-import org.apache.poi.xddf.usermodel.chart.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
-import java.util.List;
+import java.util.*;
 
 /**
- * Gera a aba "Resumo Executivo" contendo KPIs e um gráfico de tendência.
- * Compatível com o fluxo multi-projeto do WellnessQAReporter.
+ * Aba "Resumo Executivo" – versão PREMIUM.
+ *
+ * Ajustes incluídos:
+ *  - Exibe KPI group (categoria)
+ *  - Exibe formattedValue em vez de value cru
+ *  - Exibe trendSymbol (↑ ↓ →)
+ *  - Formatação profissional
+ *  - Ordenação por grupo + nome
+ *  - Compatível com Java 8
+ *  - Mantém nome da aba igual ao padrão atual
  */
 public class ExecutiveKPISheet {
 
-    public static void create(XSSFWorkbook workbook, List<KPIData> kpis, String sheetName) {
-        XSSFSheet sheet = workbook.createSheet(sheetName);
-        ReportStyleManager styles = ReportStyleManager.from(workbook);
+    public static void create(XSSFWorkbook wb, List<KPIData> kpis, String sheetName) {
+        LoggerUtils.step("📝 Criando aba Resumo Executivo: " + sheetName);
 
-        // === Cabeçalho ===
+        Sheet sheet = wb.createSheet(sheetName);
+
+        CellStyle headerStyle = buildHeaderStyle(wb);
+        CellStyle groupStyle  = buildGroupStyle(wb);
+        CellStyle valueStyle  = buildValueStyle(wb);
+        CellStyle normalStyle = buildNormalStyle(wb);
+
+        // Cabeçalhos
         Row header = sheet.createRow(0);
-        String[] headers = {"Indicador", "Valor", "Tendência", "Descrição"};
-        for (int i = 0; i < headers.length; i++) {
-            Cell cell = header.createCell(i);
-            cell.setCellValue(headers[i]);
-            cell.setCellStyle(styles.get("header"));
-        }
+        createHeaderCell(header, 0, "Grupo", headerStyle);
+        createHeaderCell(header, 1, "KPI", headerStyle);
+        createHeaderCell(header, 2, "Valor", headerStyle);
+        createHeaderCell(header, 3, "Tendência", headerStyle);
+        createHeaderCell(header, 4, "Descrição", headerStyle);
 
-        // === Estilos específicos (criados do zero, sem cloneStyleFrom) ===
-        XSSFCellStyle percentStyle = workbook.createCellStyle();
-        percentStyle.setAlignment(HorizontalAlignment.CENTER);
-        percentStyle.setVerticalAlignment(VerticalAlignment.CENTER);
-        percentStyle.setDataFormat(workbook.createDataFormat().getFormat("0.00%"));
-
-        XSSFCellStyle numberStyle = workbook.createCellStyle();
-        numberStyle.setAlignment(HorizontalAlignment.CENTER);
-        numberStyle.setVerticalAlignment(VerticalAlignment.CENTER);
-        numberStyle.setDataFormat(workbook.createDataFormat().getFormat("#,##0"));
-
-        // === Dados dos KPIs ===
-        int rowNum = 1;
-        for (KPIData kpi : kpis) {
-            XSSFRow row = sheet.createRow(rowNum++);
-
-            Cell nameCell = row.createCell(0);
-            nameCell.setCellValue(kpi.getName());
-            nameCell.setCellStyle(styles.get("left"));
-
-            double value = kpi.getValue();
-            Cell valueCell = row.createCell(1);
-
-            if (value >= 0 && value <= 1) {
-                valueCell.setCellValue(value);
-                valueCell.setCellStyle(percentStyle);
-            } else {
-                valueCell.setCellValue(value);
-                valueCell.setCellStyle(numberStyle);
+        // Ordenação dos KPIs: Group → Name
+        Collections.sort(kpis, new Comparator<KPIData>() {
+            @Override
+            public int compare(KPIData a, KPIData b) {
+                int g = safe(a.getGroup()).compareTo(safe(b.getGroup()));
+                if (g != 0) return g;
+                return a.getName().compareTo(b.getName());
             }
+        });
 
-            Cell trendCell = row.createCell(2);
-            trendCell.setCellValue(kpi.getTrendSymbol());
-            trendCell.setCellStyle(styles.get("center"));
+        int rowIndex = 1;
 
-            Cell descCell = row.createCell(3);
-            descCell.setCellValue(kpi.getDescription());
-            descCell.setCellStyle(styles.get("left"));
+        for (KPIData kpi : kpis) {
+            Row row = sheet.createRow(rowIndex++);
+
+            // Grupo
+            Cell g = row.createCell(0);
+            g.setCellValue(safe(kpi.getGroup()));
+            g.setCellStyle(groupStyle);
+
+            // Nome
+            Cell name = row.createCell(1);
+            name.setCellValue(kpi.getName());
+            name.setCellStyle(normalStyle);
+
+            // Valor formatado
+            Cell v = row.createCell(2);
+            v.setCellValue(kpi.getFormattedValue());
+            v.setCellStyle(valueStyle);
+
+            // Tendência
+            Cell t = row.createCell(3);
+            t.setCellValue(kpi.getTrendSymbol());
+            t.setCellStyle(normalStyle);
+
+            // Descrição
+            Cell d = row.createCell(4);
+            d.setCellValue(kpi.getDescription());
+            d.setCellStyle(normalStyle);
         }
 
-        // === Ajuste de colunas ===
-        for (int i = 0; i < headers.length; i++) sheet.autoSizeColumn(i);
-
-        // === Gráfico ===
-        createTrendChart(sheet, kpis);
+        // Auto-size
+        for (int col = 0; col < 5; col++) {
+            try {
+                sheet.autoSizeColumn(col);
+                int width = sheet.getColumnWidth(col);
+                sheet.setColumnWidth(col, Math.min(width + 800, 15000));
+            } catch (Exception ignored) {}
+        }
     }
 
-    private static void createTrendChart(XSSFSheet sheet, List<KPIData> kpis) {
-        if (kpis == null || kpis.isEmpty()) return;
+    // =====================================================================================
+    // HELPERS DE FORMATAÇÃO
+    // =====================================================================================
 
-        int chartStartRow = sheet.getLastRowNum() + 3;
-        XSSFDrawing drawing = sheet.createDrawingPatriarch();
-        XSSFClientAnchor anchor = drawing.createAnchor(0, 0, 0, 0, 0, chartStartRow, 8, chartStartRow + 15);
+    private static String safe(String s) {
+        return (s == null ? "" : s);
+    }
 
-        XSSFChart chart = drawing.createChart(anchor);
-        chart.setTitleText("Tendência de KPIs");
-        chart.setTitleOverlay(false);
+    private static void createHeaderCell(Row row, int col, String text, CellStyle style) {
+        Cell cell = row.createCell(col);
+        cell.setCellValue(text);
+        cell.setCellStyle(style);
+    }
 
-        XDDFChartLegend legend = chart.getOrAddLegend();
-        legend.setPosition(LegendPosition.TOP_RIGHT);
+    private static CellStyle buildHeaderStyle(Workbook wb) {
+        CellStyle style = wb.createCellStyle();
+        Font font = wb.createFont();
+        font.setBold(true);
+        font.setFontHeightInPoints((short) 11);
+        style.setFont(font);
+        style.setFillForegroundColor(IndexedColors.GREY_25_PERCENT.getIndex());
+        style.setFillPattern(FillPatternType.SOLID_FOREGROUND);
+        applyBorders(style);
+        return style;
+    }
 
-        XDDFCategoryAxis bottomAxis = chart.createCategoryAxis(AxisPosition.BOTTOM);
-        bottomAxis.setTitle("Indicadores");
-        XDDFValueAxis leftAxis = chart.createValueAxis(AxisPosition.LEFT);
-        leftAxis.setTitle("Valor (%)");
+    private static CellStyle buildGroupStyle(Workbook wb) {
+        CellStyle style = wb.createCellStyle();
+        Font font = wb.createFont();
+        font.setBold(true);
+        font.setColor(IndexedColors.BLUE.getIndex());
+        style.setFont(font);
+        applyBorders(style);
+        return style;
+    }
 
-        XDDFDataSource<String> categories = XDDFDataSourcesFactory.fromStringCellRange(sheet,
-                new CellRangeAddress(1, kpis.size(), 0, 0));
-        XDDFNumericalDataSource<Double> values = XDDFDataSourcesFactory.fromNumericCellRange(sheet,
-                new CellRangeAddress(1, kpis.size(), 1, 1));
+    private static CellStyle buildValueStyle(Workbook wb) {
+        CellStyle style = wb.createCellStyle();
+        Font font = wb.createFont();
+        font.setBold(true);
+        font.setColor(IndexedColors.DARK_GREEN.getIndex());
+        style.setFont(font);
+        applyBorders(style);
+        return style;
+    }
 
-        XDDFLineChartData data = (XDDFLineChartData) chart.createData(ChartTypes.LINE, bottomAxis, leftAxis);
-        XDDFLineChartData.Series series = (XDDFLineChartData.Series) data.addSeries(categories, values);
-        series.setTitle("Valor Atual", null);
-        series.setSmooth(false);
-        chart.plot(data);
+    private static CellStyle buildNormalStyle(Workbook wb) {
+        CellStyle style = wb.createCellStyle();
+        Font font = wb.createFont();
+        font.setBold(false);
+        style.setFont(font);
+        applyBorders(style);
+        return style;
+    }
+
+    private static void applyBorders(CellStyle style) {
+        style.setBorderTop(BorderStyle.THIN);
+        style.setBorderBottom(BorderStyle.THIN);
+        style.setBorderLeft(BorderStyle.THIN);
+        style.setBorderRight(BorderStyle.THIN);
     }
 }

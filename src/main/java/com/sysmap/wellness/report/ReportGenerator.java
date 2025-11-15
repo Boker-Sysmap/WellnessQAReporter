@@ -5,165 +5,336 @@ import com.sysmap.wellness.report.service.model.KPIData;
 import com.sysmap.wellness.report.sheet.*;
 import com.sysmap.wellness.utils.LoggerUtils;
 import com.sysmap.wellness.utils.MetricsCollector;
-import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
-import org.apache.poi.ss.util.CellRangeAddress;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
+import java.io.BufferedWriter;
 import java.io.FileOutputStream;
 import java.io.IOException;
+import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.*;
 
 /**
- * Gera o relatório Excel completo, com abas separadas por projeto
- * e um painel consolidado de KPIs entre projetos.
+ * ReportGenerator (RUN-BASED + PREMIUM)
+ *
+ * Esta versão integra:
+ *  ✔ DefectAnalyticalService RUN-BASED
+ *  ✔ KPIs
+ *  ✔ Resumo Funcional
+ *  ✔ Dashboard e Sintético
+ *  ✔ Histórico completo por release
+ *
+ * A ordem das abas segue o modelo original:
+ *  1 - Painel Consolidado
+ *  2 - Resumo Executivo (por projeto)
+ *  3 - Resumo Funcional
+ *  4 - Defeitos Analítico
+ *  5 - Defeitos Dashboard
+ *  6 - Defeitos Sintético
  */
 public class ReportGenerator {
 
     public void generateReport(Map<String, JSONObject> consolidatedData, Path outputPath) {
-        long globalStart = System.nanoTime();
-        LoggerUtils.section("GERAÇÃO DE RELATÓRIO FINAL");
+
+        LoggerUtils.section("GERAÇÃO DE RELATÓRIO (PREMIUM + RUN-BASED)");
         LoggerUtils.startTimer("report");
+        long start = System.nanoTime();
 
         try {
-            // === 1️⃣ Diretório de saída ===
-            Path reportsDir = Path.of("output", "reports");
-            if (!Files.exists(reportsDir)) Files.createDirectories(reportsDir);
+            Path finalPath = prepareOutputPath(outputPath);
 
-            Path finalPath = reportsDir.resolve(outputPath.getFileName());
-            LoggerUtils.step("🧩 Gerando relatório final: " + finalPath.getFileName());
-
-            // === 2️⃣ Inicialização dos serviços ===
             FunctionalSummaryService summaryService = new FunctionalSummaryService();
             DefectAnalyticalService defectService = new DefectAnalyticalService();
             KPIService kpiService = new KPIService();
 
-            Map<String, List<KPIData>> kpisByProject = new LinkedHashMap<>();
-            int totalProjects = consolidatedData.size();
-            int currentProject = 0;
+            // 1. KPIs
+            LoggerUtils.section("KPIs");
+            Map<String, List<KPIData>> kpisByProject =
+                    calculateKPIsForAllProjects(consolidatedData, kpiService);
 
+            // 2. Resumo Funcional
+            LoggerUtils.section("RESUMO FUNCIONAL");
+            Map<String, JSONObject> functionalSummaries =
+                    summaryService.prepareData(consolidatedData);
+
+            // 3. Defeitos ENRIQUECIDOS (run-based)
+            LoggerUtils.section("DEFEITOS (RUN-BASED)");
+            Map<String, JSONArray> enrichedDefects =
+                    defectService.prepareData(consolidatedData);
+
+            // 4. Gera o Excel
             try (XSSFWorkbook wb = new XSSFWorkbook()) {
 
-                // === 3️⃣ Geração das abas por projeto ===
-                for (Map.Entry<String, JSONObject> entry : consolidatedData.entrySet()) {
-                    long projectStart = System.nanoTime();
-                    String projectCode = entry.getKey();
-                    JSONObject projectData = entry.getValue();
-                    currentProject++;
+                generateAllSheets(
+                        wb,
+                        consolidatedData,
+                        enrichedDefects,
+                        kpisByProject,
+                        functionalSummaries
+                );
 
-                    LoggerUtils.section("📊 Projeto " + projectCode + " (" + currentProject + "/" + totalProjects + ")");
-                    LoggerUtils.startTimer(projectCode);
+                adjustAllColumns(wb);
 
-                    // --- KPIs Executivos ---
-                    LoggerUtils.step("Calculando KPIs executivos...");
-                    List<KPIData> kpis = kpiService.calculateKPIs(projectData, projectCode);
-                    kpisByProject.put(projectCode, kpis);
-                    ExecutiveKPISheet.create(wb, kpis, projectCode + " – Resumo Executivo");
-                    LoggerUtils.success("Planilha 'Resumo Executivo' criada.");
-
-                    // --- Resumo Funcional ---
-                    LoggerUtils.step("Gerando Resumo Funcional...");
-                    Map<String, JSONObject> summary = summaryService.prepareData(Map.of(projectCode, projectData));
-                    new FunctionalSummarySheet().create(wb, summary, projectCode + " – Resumo Funcional");
-                    LoggerUtils.success("Planilha 'Resumo Funcional' criada.");
-
-                    // --- Defeitos Analítico ---
-                    LoggerUtils.step("Gerando Defeitos Analítico...");
-                    Map<String, JSONArray> defects = defectService.prepareData(Map.of(projectCode, projectData));
-                    new DefectAnalyticalReportSheet().create(wb, defects, projectCode + " – Defeitos Analítico");
-                    LoggerUtils.success("Planilha 'Defeitos Analítico' criada.");
-
-                    LoggerUtils.endTimer(projectCode, "Projeto " + projectCode + " concluído");
-                    LoggerUtils.progress("Progresso geral", currentProject, totalProjects);
-                    LoggerUtils.time("Duração do projeto " + projectCode, projectStart);
-                }
-
-                // === 4️⃣ Painel Consolidado ===
-                LoggerUtils.section("PAINEL CONSOLIDADO");
-                if (!kpisByProject.isEmpty()) {
-                    LoggerUtils.step("Criando aba de consolidação de KPIs...");
-                    ExecutiveConsolidatedSheet.create(wb, kpisByProject);
-                    wb.setSheetOrder("Painel Consolidado", 0);
-                    appendFooter(wb.getSheet("Painel Consolidado"), wb, System.currentTimeMillis());
-                    LoggerUtils.success("Painel Consolidado criado com sucesso.");
-                }
-
-                // === 5️⃣ Ajuste de colunas ===
-                LoggerUtils.step("Ajustando largura de colunas...");
-                for (int i = 0; i < wb.getNumberOfSheets(); i++) {
-                    Sheet s = wb.getSheetAt(i);
-                    if (s.getRow(0) != null) {
-                        int cols = s.getRow(0).getPhysicalNumberOfCells();
-                        for (int c = 0; c < cols; c++) {
-                            s.autoSizeColumn(c);
-                            int width = s.getColumnWidth(c);
-                            s.setColumnWidth(c, Math.min(width + 1000, 15000));
-                        }
-                    }
-                }
-
-                // === 6️⃣ Gravação do arquivo ===
-                try (FileOutputStream fos = new FileOutputStream(finalPath.toFile())) {
-                    wb.write(fos);
-                }
-
-                long durationMs = (System.nanoTime() - globalStart) / 1_000_000;
-                LoggerUtils.endTimer("report", "Relatório Excel gerado");
-                LoggerUtils.success("✅ Relatório Excel salvo em: " + finalPath.toAbsolutePath());
-                LoggerUtils.size(finalPath.getFileName().toString(), Files.size(finalPath));
-                LoggerUtils.metric("reportGenerationTimeMs", durationMs);
-                MetricsCollector.set("reportFile", finalPath.getFileName().toString());
-                MetricsCollector.set("reportGenerationTimeMs", durationMs);
+                saveWorkbook(wb, finalPath);
+                generateHistoryFiles(consolidatedData, enrichedDefects, kpisByProject, functionalSummaries, finalPath);
 
             }
 
-            LoggerUtils.section("FINALIZAÇÃO");
-            LoggerUtils.time("Duração total do processo", globalStart);
-            LoggerUtils.success("Execução concluída sem erros.");
-
-        } catch (IOException e) {
-            LoggerUtils.error("💥 Erro ao gerar relatório (I/O)", e);
-            MetricsCollector.increment("reportErrors");
+            long end = System.nanoTime();
+            LoggerUtils.success("🏁 Relatório gerado: " + finalPath.toAbsolutePath());
+            MetricsCollector.timing("report.totalMs", (end - start) / 1_000_000);
 
         } catch (Exception e) {
-            LoggerUtils.error("💥 Erro inesperado ao gerar relatório", e);
+            LoggerUtils.error("💥 Erro grave durante a geração do relatório", e);
             MetricsCollector.increment("reportErrors");
         }
     }
 
-    /**
-     * Adiciona rodapé informativo na aba Painel Consolidado.
-     */
-    private void appendFooter(Sheet sheet, XSSFWorkbook wb, long startTime) {
-        if (sheet == null) return;
+    // ---------------------------------------------------------------------
+    // PREPARA CAMINHO DE SAÍDA
+    // ---------------------------------------------------------------------
+    private Path prepareOutputPath(Path outputPath) throws IOException {
 
-        int footerRowNum = sheet.getLastRowNum() + 3;
-        Row footer = sheet.createRow(footerRowNum);
+        Path reportsDir = Path.of("output", "reports");
+        if (!Files.exists(reportsDir)) Files.createDirectories(reportsDir);
 
-        long duration = System.currentTimeMillis() - startTime;
-        String timestamp = LocalDateTime.now()
-                .format(DateTimeFormatter.ofPattern("dd/MM/yyyy HH:mm:ss"));
+        Path finalPath = reportsDir.resolve(outputPath.getFileName());
+        LoggerUtils.step("📄 Arquivo final: " + finalPath.getFileName());
 
-        String footerText = String.format(
-                "Relatório gerado em %s | Duração total: %.2f segundos",
-                timestamp, (duration / 1000.0)
-        );
+        return finalPath;
+    }
 
-        Cell cell = footer.createCell(0);
-        cell.setCellValue(footerText);
+    // ---------------------------------------------------------------------
+    // KPIs
+    // ---------------------------------------------------------------------
+    private Map<String, List<KPIData>> calculateKPIsForAllProjects(
+            Map<String, JSONObject> consolidatedData,
+            KPIService kpiService
+    ) {
+        Map<String, List<KPIData>> kpisByProject = new LinkedHashMap<>();
 
-        CellStyle footerStyle = wb.createCellStyle();
-        Font font = wb.createFont();
-        font.setFontHeightInPoints((short) 9);
-        font.setColor(IndexedColors.GREY_50_PERCENT.getIndex());
-        footerStyle.setFont(font);
-        footerStyle.setAlignment(HorizontalAlignment.LEFT);
+        for (String project : consolidatedData.keySet()) {
+            List<KPIData> list = kpiService.calculateKPIs(
+                    consolidatedData.get(project),
+                    project
+            );
+            kpisByProject.put(project, list);
+        }
 
-        cell.setCellStyle(footerStyle);
-        sheet.addMergedRegion(new CellRangeAddress(footerRowNum, footerRowNum, 0, 3));
+        return kpisByProject;
+    }
+
+    // ---------------------------------------------------------------------
+    // GERA TODAS AS ABAS
+    // ---------------------------------------------------------------------
+    private void generateAllSheets(
+            XSSFWorkbook wb,
+            Map<String, JSONObject> consolidatedData,
+            Map<String, JSONArray> enrichedDefects,
+            Map<String, List<KPIData>> kpisByProject,
+            Map<String, JSONObject> functionalSummaries
+    ) {
+
+        // 1 – Painel Consolidado
+        LoggerUtils.section("📊 Painel Consolidado");
+        ExecutiveConsolidatedSheet.create(wb, kpisByProject);
+        wb.setSheetOrder("Painel Consolidado", 0);
+
+        // 2 – Resumo Executivo
+        LoggerUtils.section("📈 Resumo Executivo");
+        for (String project : kpisByProject.keySet()) {
+            ExecutiveKPISheet.create(
+                    wb,
+                    kpisByProject.get(project),
+                    project + " – Resumo Executivo"
+            );
+        }
+
+        // 3 – Resumo Funcional
+        LoggerUtils.section("📘 Resumo Funcional");
+        for (String project : functionalSummaries.keySet()) {
+
+            JSONObject summary = functionalSummaries.get(project);
+
+            Map<String, JSONObject> map = new LinkedHashMap<>();
+            map.put(project, summary);
+
+            new FunctionalSummarySheet().create(
+                    wb,
+                    map,
+                    project + " – Resumo Funcional"
+            );
+        }
+
+        // 4 – Defeitos Analítico (USANDO enrichedDefects)
+        LoggerUtils.section("🐞 Defeitos Analítico");
+        for (String project : consolidatedData.keySet()) {
+
+            JSONArray list = enrichedDefects.getOrDefault(project, new JSONArray());
+
+            Map<String, JSONArray> map = new LinkedHashMap<>();
+            map.put(project, list);
+
+            new DefectAnalyticalReportSheet().create(
+                    wb,
+                    map,
+                    project + " – Defeitos Analítico"
+            );
+        }
+
+        // 5 – Dashboard (também usando enriched)
+        LoggerUtils.section("📊 Dashboard de Defeitos");
+        for (String project : consolidatedData.keySet()) {
+
+            JSONArray defects = enrichedDefects.getOrDefault(project, new JSONArray());
+
+            JSONObject d = new JSONObject();
+            d.put("defects", defects);
+
+            DefectsDashboardSheet.create(
+                    wb,
+                    d,
+                    project + " – Defeitos DashBoard"
+            );
+        }
+
+        // 6 – Sintético (também usando enriched)
+        LoggerUtils.section("📋 Defeitos Sintético");
+        for (String project : consolidatedData.keySet()) {
+
+            JSONArray defects = enrichedDefects.getOrDefault(project, new JSONArray());
+
+            JSONObject d = new JSONObject();
+            d.put("defects", defects);
+
+            DefectsSyntheticSheet.create(
+                    wb,
+                    d,
+                    project + " – Defeitos Sintético"
+            );
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // AUTOAJUSTE DE COLUNAS
+    // ---------------------------------------------------------------------
+    private void adjustAllColumns(Workbook wb) {
+
+        LoggerUtils.step("🪛 Ajustando colunas");
+
+        for (int i = 0; i < wb.getNumberOfSheets(); i++) {
+
+            Sheet s = wb.getSheetAt(i);
+            if (s.getRow(0) == null) continue;
+
+            int cols = s.getRow(0).getPhysicalNumberOfCells();
+
+            for (int c = 0; c < cols; c++) {
+                try {
+                    s.autoSizeColumn(c);
+                    int width = s.getColumnWidth(c);
+                    s.setColumnWidth(c, Math.min(width + 1500, 18000));
+                } catch (Exception ignored) {}
+            }
+        }
+    }
+
+    // ---------------------------------------------------------------------
+    // SALVAR EXCEL
+    // ---------------------------------------------------------------------
+    private void saveWorkbook(Workbook wb, Path finalPath) throws IOException {
+
+        try (FileOutputStream fos = new FileOutputStream(finalPath.toFile())) {
+            wb.write(fos);
+        }
+
+        LoggerUtils.success("💾 Excel salvo em " + finalPath.toAbsolutePath());
+        MetricsCollector.set("reportFile", finalPath.getFileName().toString());
+    }
+
+    // ---------------------------------------------------------------------
+    // HISTÓRICO
+    // ---------------------------------------------------------------------
+    private void generateHistoryFiles(
+            Map<String, JSONObject> consolidated,
+            Map<String, JSONArray> enrichedDefects,
+            Map<String, List<KPIData>> kpisByProject,
+            Map<String, JSONObject> functionalSummaries,
+            Path finalPath
+    ) {
+
+        LoggerUtils.section("📚 Salvando histórico (run-based)");
+
+        LocalDateTime now = LocalDateTime.now();
+        String year = String.valueOf(now.getYear());
+        String releaseId = stripExt(finalPath.getFileName().toString());
+
+        for (String project : consolidated.keySet()) {
+            try {
+                String normalized = normalize(project);
+
+                Path relDir = Paths.get("historico", "releases", normalized, year, releaseId);
+                Path snapDir = Paths.get("historico", "snapshots", normalized, year, releaseId);
+
+                Files.createDirectories(relDir);
+                Files.createDirectories(snapDir);
+
+                JSONObject hist = new JSONObject();
+                hist.put("project", project);
+                hist.put("year", year);
+                hist.put("releaseId", releaseId);
+                hist.put("generatedAt", now.toString());
+                hist.put("reportFile", finalPath.getFileName().toString());
+
+                // KPIs
+                JSONArray arrKpi = new JSONArray();
+                List<KPIData> kpis = kpisByProject.get(project);
+                if (kpis != null) {
+                    for (KPIData k : kpis) arrKpi.put(k.toJson());
+                }
+                hist.put("kpis", arrKpi);
+
+                // Resumo funcional
+                if (functionalSummaries.containsKey(project)) {
+                    hist.put("functionalSummary", functionalSummaries.get(project));
+                }
+
+                // Defeitos enriquecidos
+                hist.put("defects", enrichedDefects.get(project));
+
+                // Gravar histórico
+                writeJson(hist, relDir.resolve("kpis_release.json"));
+                writeJson(consolidated.get(project), snapDir.resolve("consolidated.json"));
+
+                LoggerUtils.info("📁 Histórico salvo: " + project);
+
+            } catch (Exception e) {
+                LoggerUtils.error("⚠️ Falha ao salvar histórico para " + project, e);
+            }
+        }
+    }
+
+    private void writeJson(JSONObject json, Path path) {
+        try (BufferedWriter bw = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
+            bw.write(json.toString(2));
+        } catch (Exception e) {
+            LoggerUtils.error("Erro ao salvar JSON em " + path, e);
+        }
+    }
+
+    private String stripExt(String f) {
+        int idx = f.lastIndexOf(".");
+        return idx == -1 ? f : f.substring(0, idx);
+    }
+
+    private String normalize(String s) {
+        return s.toLowerCase()
+                .replace(" ", "_")
+                .replaceAll("[^a-z0-9_]", "");
     }
 }
