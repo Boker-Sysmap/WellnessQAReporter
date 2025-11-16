@@ -1,108 +1,86 @@
 package com.sysmap.wellness.report.sheet;
 
 import com.sysmap.wellness.report.service.model.KPIData;
-import com.sysmap.wellness.report.style.ReportStyleManager;
 import org.apache.poi.ss.usermodel.*;
-import org.apache.poi.ss.util.CellRangeAddress;
-import org.apache.poi.xssf.usermodel.*;
-import org.apache.poi.xddf.usermodel.chart.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
 import java.util.List;
 
 /**
- * Gera a aba "Resumo Executivo" contendo KPIs e um gráfico de tendência.
- * Compatível com o fluxo multi-projeto do WellnessQAReporter.
+ * Gera a aba <b>Resumo Executivo</b> para um único projeto.
+ *
+ * <p>Esta planilha tem caráter sintético e exibe os KPIs calculados
+ * na execução atual (run-based), sempre associados à release vigente.</p>
+ *
+ * <h2>Estrutura da planilha</h2>
+ * <ul>
+ *     <li><b>Release</b> – identifica a release correspondente aos KPIs;</li>
+ *     <li><b>KPI</b> – nome amigável do indicador;</li>
+ *     <li><b>Valor</b> – valor numérico do KPI (duas casas decimais).</li>
+ * </ul>
+ *
+ * <p>A aba é criada separadamente para cada projeto, normalmente nomeada como
+ * “{Projeto} – Resumo Executivo” pelo {@code ReportGenerator}.</p>
+ *
+ * <h2>Regras e comportamentos importantes</h2>
+ * <ul>
+ *     <li>Os KPIs exibidos dependem apenas da lista recebida no parâmetro {@code kpis};</li>
+ *     <li>Todos os registros usam o mesmo {@code currentReleaseId};</li>
+ *     <li>Os valores são tratados como numéricos e formatados com 2 casas decimais;</li>
+ *     <li>A planilha não realiza ordenação nem extração de dados adicionais.</li>
+ * </ul>
+ *
+ * <p>É uma aba essencial da visão executiva, complementando o Painel Consolidado.</p>
  */
 public class ExecutiveKPISheet {
 
-    public static void create(XSSFWorkbook workbook, List<KPIData> kpis, String sheetName) {
-        XSSFSheet sheet = workbook.createSheet(sheetName);
-        ReportStyleManager styles = ReportStyleManager.from(workbook);
+    /**
+     * Cria a aba de Resumo Executivo dentro do workbook.
+     *
+     * <p>Fluxo:</p>
+     * <ol>
+     *     <li>Cria a planilha com o nome especificado;</li>
+     *     <li>Define um estilo numérico padrão (0.00);</li>
+     *     <li>Insere o cabeçalho com as três colunas principais;</li>
+     *     <li>Insere uma linha para cada KPI informado;</li>
+     *     <li>Atribui o ID da release para todas as linhas.</li>
+     * </ol>
+     *
+     * @param wb               Workbook onde a aba será criada.
+     * @param kpis             Lista de {@link KPIData} calculados no run atual.
+     * @param sheetName        Nome da aba que será criada.
+     * @param currentReleaseId Identificador da release ativa.
+     */
+    public static void create(
+        XSSFWorkbook wb,
+        List<KPIData> kpis,
+        String sheetName,
+        String currentReleaseId
+    ) {
+        Sheet sheet = wb.createSheet(sheetName);
 
-        // === Cabeçalho ===
+        // Estilo numérico com duas casas decimais
+        CellStyle numberStyle = wb.createCellStyle();
+        DataFormat format = wb.createDataFormat();
+        numberStyle.setDataFormat(format.getFormat("0.00"));
+
+        // Cabeçalho
         Row header = sheet.createRow(0);
-        String[] headers = {"Indicador", "Valor", "Tendência", "Descrição"};
-        for (int i = 0; i < headers.length; i++) {
-            Cell cell = header.createCell(i);
-            cell.setCellValue(headers[i]);
-            cell.setCellStyle(styles.get("header"));
-        }
+        header.createCell(0).setCellValue("Release");
+        header.createCell(1).setCellValue("KPI");
+        header.createCell(2).setCellValue("Valor");
 
-        // === Estilos específicos (criados do zero, sem cloneStyleFrom) ===
-        XSSFCellStyle percentStyle = workbook.createCellStyle();
-        percentStyle.setAlignment(HorizontalAlignment.CENTER);
-        percentStyle.setVerticalAlignment(VerticalAlignment.CENTER);
-        percentStyle.setDataFormat(workbook.createDataFormat().getFormat("0.00%"));
+        int rowIndex = 1;
 
-        XSSFCellStyle numberStyle = workbook.createCellStyle();
-        numberStyle.setAlignment(HorizontalAlignment.CENTER);
-        numberStyle.setVerticalAlignment(VerticalAlignment.CENTER);
-        numberStyle.setDataFormat(workbook.createDataFormat().getFormat("#,##0"));
-
-        // === Dados dos KPIs ===
-        int rowNum = 1;
+        // Popula cada KPI em uma linha
         for (KPIData kpi : kpis) {
-            XSSFRow row = sheet.createRow(rowNum++);
+            Row row = sheet.createRow(rowIndex++);
+            row.createCell(0).setCellValue(currentReleaseId);
+            row.createCell(1).setCellValue(kpi.getName());
 
-            Cell nameCell = row.createCell(0);
-            nameCell.setCellValue(kpi.getName());
-            nameCell.setCellStyle(styles.get("left"));
-
-            double value = kpi.getValue();
-            Cell valueCell = row.createCell(1);
-
-            if (value >= 0 && value <= 1) {
-                valueCell.setCellValue(value);
-                valueCell.setCellStyle(percentStyle);
-            } else {
-                valueCell.setCellValue(value);
-                valueCell.setCellStyle(numberStyle);
-            }
-
-            Cell trendCell = row.createCell(2);
-            trendCell.setCellValue(kpi.getTrendSymbol());
-            trendCell.setCellStyle(styles.get("center"));
-
-            Cell descCell = row.createCell(3);
-            descCell.setCellValue(kpi.getDescription());
-            descCell.setCellStyle(styles.get("left"));
+            Cell valCell = row.createCell(2);
+            valCell.setCellValue(kpi.getValue());
+            valCell.setCellStyle(numberStyle);
         }
-
-        // === Ajuste de colunas ===
-        for (int i = 0; i < headers.length; i++) sheet.autoSizeColumn(i);
-
-        // === Gráfico ===
-        createTrendChart(sheet, kpis);
-    }
-
-    private static void createTrendChart(XSSFSheet sheet, List<KPIData> kpis) {
-        if (kpis == null || kpis.isEmpty()) return;
-
-        int chartStartRow = sheet.getLastRowNum() + 3;
-        XSSFDrawing drawing = sheet.createDrawingPatriarch();
-        XSSFClientAnchor anchor = drawing.createAnchor(0, 0, 0, 0, 0, chartStartRow, 8, chartStartRow + 15);
-
-        XSSFChart chart = drawing.createChart(anchor);
-        chart.setTitleText("Tendência de KPIs");
-        chart.setTitleOverlay(false);
-
-        XDDFChartLegend legend = chart.getOrAddLegend();
-        legend.setPosition(LegendPosition.TOP_RIGHT);
-
-        XDDFCategoryAxis bottomAxis = chart.createCategoryAxis(AxisPosition.BOTTOM);
-        bottomAxis.setTitle("Indicadores");
-        XDDFValueAxis leftAxis = chart.createValueAxis(AxisPosition.LEFT);
-        leftAxis.setTitle("Valor (%)");
-
-        XDDFDataSource<String> categories = XDDFDataSourcesFactory.fromStringCellRange(sheet,
-                new CellRangeAddress(1, kpis.size(), 0, 0));
-        XDDFNumericalDataSource<Double> values = XDDFDataSourcesFactory.fromNumericCellRange(sheet,
-                new CellRangeAddress(1, kpis.size(), 1, 1));
-
-        XDDFLineChartData data = (XDDFLineChartData) chart.createData(ChartTypes.LINE, bottomAxis, leftAxis);
-        XDDFLineChartData.Series series = (XDDFLineChartData.Series) data.addSeries(categories, values);
-        series.setTitle("Valor Atual", null);
-        series.setSmooth(false);
-        chart.plot(data);
     }
 }
