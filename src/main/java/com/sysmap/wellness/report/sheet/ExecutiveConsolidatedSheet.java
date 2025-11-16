@@ -1,167 +1,159 @@
 package com.sysmap.wellness.report.sheet;
 
+import com.sysmap.wellness.report.kpi.history.KPIHistoryRecord;
+import com.sysmap.wellness.report.kpi.history.KPIHistoryRepository;
 import com.sysmap.wellness.report.service.model.KPIData;
-import com.sysmap.wellness.report.style.ReportStyleManager;
-import com.sysmap.wellness.utils.LoggerUtils;
 import org.apache.poi.ss.usermodel.*;
-import org.apache.poi.ss.util.CellRangeAddress;
-import org.apache.poi.xssf.usermodel.*;
-import org.apache.poi.xddf.usermodel.chart.*;
+import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
+import java.io.InputStream;
 import java.util.*;
 
 /**
- * Painel Consolidado de KPIs entre projetos (Fully, Chubb, etc.)
- * Corrigido com formatação percentual automática, espaçamento e gráfico escalado.
+ * Painel Consolidado FINAL
+ *
+ * - 2 colunas fixas: Projeto | Release
+ * - Uma linha por release (projeto + release)
+ * - Usa histórico de KPIs (kpi_results.json)
+ * - Número de releases controlado por config.properties:
+ *     report.kpi.maxReleases = 0 → todas
+ *     report.kpi.maxReleases = 1 → apenas atual
+ *     report.kpi.maxReleases = N → N releases mais recentes
+ *
+ * Por enquanto só exibe o KPI "escopo_planejado".
  */
 public class ExecutiveConsolidatedSheet {
 
-    public static void create(XSSFWorkbook workbook, Map<String, List<KPIData>> kpisByProject) {
-        String sheetName = "Painel Consolidado";
-        XSSFSheet sheet = workbook.createSheet(sheetName);
-        ReportStyleManager styles = ReportStyleManager.from(workbook);
-        LoggerUtils.step("📈 Criando aba: " + sheetName);
+    // Por enquanto só este KPI; quando surgirem outros, basta incluir aqui.
+    private static final List<String> SELECTED_KPIS = List.of("escopo_planejado");
 
-        // === Título Principal ===
-        Row titleRow = sheet.createRow(0);
-        titleRow.setHeightInPoints(28);
-        Cell titleCell = titleRow.createCell(0);
-        titleCell.setCellValue("Painel Consolidado de KPIs – Visão Executiva");
-        XSSFCellStyle titleStyle = workbook.createCellStyle();
-        Font titleFont = workbook.createFont();
-        titleFont.setBold(true);
-        titleFont.setFontHeightInPoints((short) 14);
-        titleStyle.setFont(titleFont);
-        titleStyle.setAlignment(HorizontalAlignment.CENTER);
-        titleCell.setCellStyle(titleStyle);
-        sheet.addMergedRegion(new CellRangeAddress(0, 0, 0, kpisByProject.size()));
+    // Labels amigáveis para cada KPI
+    private static final Map<String, String> KPI_LABELS = Map.of(
+        "escopo_planejado", "Escopo planejado"
+    );
 
-        // === Cabeçalho ===
-        Row header = sheet.createRow(2);
-        header.createCell(0).setCellValue("Indicador");
-        int col = 1;
+    public static void create(
+        XSSFWorkbook wb,
+        Map<String, List<KPIData>> kpisByProject,
+        Map<String, String> releaseByProject // hoje não usamos mais, mantido por compat.
+    ) {
+
+        Sheet sheet = wb.createSheet("Painel Consolidado");
+
+        // Estilo numérico sem casas
+        CellStyle intStyle = wb.createCellStyle();
+        DataFormat format = wb.createDataFormat();
+        intStyle.setDataFormat(format.getFormat("0"));
+
+        // 1) Cabeçalho
+        Row header = sheet.createRow(0);
+        header.createCell(0).setCellValue("Projeto");
+        header.createCell(1).setCellValue("Release");
+
+        int colIndex = 2;
+        for (String kpiKey : SELECTED_KPIS) {
+            String label = KPI_LABELS.getOrDefault(kpiKey, kpiKey);
+            header.createCell(colIndex++).setCellValue(label);
+        }
+
+        // 2) Config: quantas releases mostrar
+        int maxReleases = resolveMaxReleases();
+
+        KPIHistoryRepository historyRepo = new KPIHistoryRepository();
+        int rowIndex = 1;
+
+        // Uma “seção” por projeto
         for (String project : kpisByProject.keySet()) {
-            Cell c = header.createCell(col++);
-            c.setCellValue(project);
-        }
-        for (int i = 0; i < col; i++) {
-            header.getCell(i).setCellStyle(styles.get("header"));
-        }
 
-        // === Lista de todos os indicadores ===
-        Set<String> indicadores = new LinkedHashSet<>();
-        for (List<KPIData> list : kpisByProject.values()) {
-            for (KPIData k : list) indicadores.add(k.getName());
-        }
+            // Carrega todo o histórico do projeto
+            List<KPIHistoryRecord> history = historyRepo.loadAll(project);
 
-        // === Dados ===
-        int rowNum = 3;
-        for (String indicador : indicadores) {
-            Row row = sheet.createRow(rowNum++);
-            Cell nameCell = row.createCell(0);
-            nameCell.setCellValue(indicador);
-            nameCell.setCellStyle(styles.get("left"));
+            // Agrupa por release → (kpiKey → último registro)
+            Map<String, Map<String, KPIHistoryRecord>> byRelease = new HashMap<>();
 
-            col = 1;
-            for (String project : kpisByProject.keySet()) {
-                List<KPIData> list = kpisByProject.get(project);
-                Optional<KPIData> kpiOpt = list.stream()
-                        .filter(k -> k.getName().equals(indicador))
-                        .findFirst();
+            for (KPIHistoryRecord r : history) {
 
-                Cell valCell = row.createCell(col++);
-                if (kpiOpt.isEmpty()) {
-                    valCell.setCellValue("-");
-                    valCell.setCellStyle(styles.get("center"));
-                    continue;
+                String kpiKey = r.getKpiName();
+                if (!SELECTED_KPIS.contains(kpiKey)) continue;
+
+                String release = r.getRelease();
+                if (release == null || release.isBlank()) continue;
+
+                byRelease.computeIfAbsent(release, x -> new HashMap<>());
+                Map<String, KPIHistoryRecord> kpiMap = byRelease.get(release);
+
+                KPIHistoryRecord existing = kpiMap.get(kpiKey);
+                if (existing == null || r.getTimestamp().isAfter(existing.getTimestamp())) {
+                    kpiMap.put(kpiKey, r);
                 }
+            }
 
-                KPIData kpi = kpiOpt.get();
-                double value = kpi.getValue();
+            if (byRelease.isEmpty()) {
+                // Pode acontecer na primeira execução, sem histórico ainda.
+                continue;
+            }
 
-                // === Detecção automática de formato ===
-                XSSFCellStyle style = workbook.createCellStyle();
-                style.setAlignment(HorizontalAlignment.CENTER);
-                style.setVerticalAlignment(VerticalAlignment.CENTER);
-                style.setBorderBottom(BorderStyle.THIN);
-                style.setBorderTop(BorderStyle.THIN);
-                style.setBorderLeft(BorderStyle.THIN);
-                style.setBorderRight(BorderStyle.THIN);
+            // Lista de releases ordenada da mais recente para a mais antiga
+            List<String> releases = new ArrayList<>(byRelease.keySet());
+            releases.sort(Comparator.reverseOrder());
 
-                DataFormat df = workbook.createDataFormat();
-                if (value >= 0 && value <= 1) {
-                    style.setDataFormat(df.getFormat("0.00%"));
-                    valCell.setCellValue(value);
-                } else if (value > 1 && value <= 100) {
-                    style.setDataFormat(df.getFormat("0.00%"));
-                    valCell.setCellValue(value / 100); // corrige percentuais 0–100
-                } else {
-                    style.setDataFormat(df.getFormat("#,##0.00"));
-                    valCell.setCellValue(value);
+            if (maxReleases > 0 && releases.size() > maxReleases) {
+                releases = releases.subList(0, maxReleases);
+            }
+
+            for (String release : releases) {
+
+                Row row = sheet.createRow(rowIndex++);
+                row.createCell(0).setCellValue(project);
+                row.createCell(1).setCellValue(release);
+
+                colIndex = 2;
+
+                Map<String, KPIHistoryRecord> kpiMap = byRelease.get(release);
+
+                for (String kpiKey : SELECTED_KPIS) {
+                    Cell cell = row.createCell(colIndex++);
+
+                    KPIHistoryRecord rec = kpiMap.get(kpiKey);
+                    if (rec == null || rec.getValue() == null) {
+                        cell.setBlank();
+                        continue;
+                    }
+
+                    double val;
+                    try {
+                        val = Double.parseDouble(String.valueOf(rec.getValue()));
+                    } catch (NumberFormatException e) {
+                        val = 0.0;
+                    }
+
+                    cell.setCellValue(val);
+                    cell.setCellStyle(intStyle);
                 }
-
-                valCell.setCellStyle(style);
             }
         }
-
-        // === Ajuste de colunas (com padding extra) ===
-        for (int i = 0; i < kpisByProject.size() + 1; i++) {
-            sheet.autoSizeColumn(i);
-            int width = sheet.getColumnWidth(i);
-            sheet.setColumnWidth(i, Math.min(width + 1200, 14000));
-        }
-
-        // === Gráfico comparativo ===
-        createComparisonChart(sheet, kpisByProject, indicadores);
-
-        LoggerUtils.success("✅ Painel Consolidado criado com sucesso!");
     }
 
-    private static void createComparisonChart(XSSFSheet sheet,
-                                              Map<String, List<KPIData>> kpisByProject,
-                                              Set<String> indicadores) {
-        if (kpisByProject.isEmpty() || indicadores.isEmpty()) return;
-
-        int chartStartRow = sheet.getLastRowNum() + 4;
-        XSSFDrawing drawing = sheet.createDrawingPatriarch();
-        XSSFClientAnchor anchor = drawing.createAnchor(0, 0, 0, 0,
-                0, chartStartRow, 9, chartStartRow + 18);
-
-        XSSFChart chart = drawing.createChart(anchor);
-        chart.setTitleText("Comparativo de Indicadores por Projeto");
-        chart.setTitleOverlay(false);
-
-        XDDFChartLegend legend = chart.getOrAddLegend();
-        legend.setPosition(LegendPosition.TOP_RIGHT);
-
-        XDDFCategoryAxis bottomAxis = chart.createCategoryAxis(AxisPosition.BOTTOM);
-        bottomAxis.setTitle("Indicadores");
-        XDDFValueAxis leftAxis = chart.createValueAxis(AxisPosition.LEFT);
-        leftAxis.setTitle("Valor (%)");
-        leftAxis.setCrosses(AxisCrosses.AUTO_ZERO);
-
-        // Limitar eixo Y a 100%
-        leftAxis.setMaximum(1.0);
-
-        XDDFDataSource<String> categories = XDDFDataSourcesFactory.fromStringCellRange(
-                sheet, new CellRangeAddress(3, 3 + indicadores.size() - 1, 0, 0)
-        );
-
-        XDDFBarChartData data = (XDDFBarChartData)
-                chart.createData(ChartTypes.BAR, bottomAxis, leftAxis);
-        data.setBarDirection(BarDirection.COL);
-
-        int projectCol = 1;
-        for (String project : kpisByProject.keySet()) {
-            XDDFNumericalDataSource<Double> values =
-                    XDDFDataSourcesFactory.fromNumericCellRange(sheet,
-                            new CellRangeAddress(3, 3 + indicadores.size() - 1, projectCol, projectCol));
-            XDDFBarChartData.Series series = (XDDFBarChartData.Series)
-                    data.addSeries(categories, values);
-            series.setTitle(project, null);
-            projectCol++;
+    /**
+     * Lê report.kpi.maxReleases do config.properties.
+     * Default = 1 (apenas release atual). 0 = todas.
+     */
+    private static int resolveMaxReleases() {
+        Properties props = new Properties();
+        try (InputStream in = ExecutiveConsolidatedSheet.class
+            .getResourceAsStream("/config/config.properties")) {
+            if (in != null) {
+                props.load(in);
+            }
+        } catch (Exception ignored) {
         }
 
-        chart.plot(data);
+        String raw = props.getProperty("report.kpi.maxReleases", "1").trim();
+        try {
+            int val = Integer.parseInt(raw);
+            return Math.max(0, val);
+        } catch (NumberFormatException e) {
+            return 1;
+        }
     }
 }

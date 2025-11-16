@@ -9,7 +9,7 @@ import java.util.stream.Collectors;
 
 /**
  * ConfigManager PREMIUM
- *
+ * <p>
  * - Compatível com Java 8+
  * - Sanitização de entrada
  * - Validação de arquivos de config
@@ -236,6 +236,36 @@ public class ConfigManager {
     public static String getApiBaseUrl() {
         return props.getProperty("qase.api.baseUrl", "https://api.qase.io/v1");
     }
+
+    // ------------------------------------------------------------
+//  HISTORY / KPI DIRECTORY
+// ------------------------------------------------------------
+
+    /**
+     * Retorna o diretório base onde o histórico de KPIs será salvo.
+     * <p>
+     * Configurável via:
+     * history.kpi.baseDir=historico/kpis
+     * <p>
+     * Caso não exista no config.properties, o valor padrão será: historico/kpis
+     * <p>
+     * O método também garante que o diretório exista, criando-o se necessário.
+     */
+    public static String getKPIHistoryBaseDir() {
+        String path = props.getProperty("history.kpi.baseDir", "historico/kpis").trim();
+
+        // Normaliza caminhos relativos/absolutos de forma portável
+        Path dir = Paths.get(path);
+
+        try {
+            Files.createDirectories(dir);  // garante existência
+        } catch (IOException e) {
+            LoggerUtils.error("❌ Falha ao criar diretório do histórico de KPIs: " + dir, e);
+        }
+
+        return dir.toString();
+    }
+
 
     // ------------------------------------------------------------
     //  RELOAD
