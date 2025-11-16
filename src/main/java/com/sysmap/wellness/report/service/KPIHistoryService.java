@@ -9,93 +9,91 @@ import java.util.*;
 import java.util.stream.Collectors;
 
 /**
- * Serviço de alto nível responsável por gerenciar e consultar o histórico
- * de KPIs de cada projeto. Esta classe funciona como a camada de fachada
- * (facade) para o repositório de histórico, encapsulando regras de acesso,
- * conversões e agregações necessárias para alimentar diferentes partes do
- * relatório, como Painel Consolidado, KPIs executivos e análises temporais.
- *
- * <p>Principais responsabilidades:</p>
- * <ul>
- *   <li>Persistir no histórico os KPIs calculados para cada release;</li>
- *   <li>Consultar a última ocorrência de um KPI específico (último snapshot);</li>
- *   <li>Disponibilizar a série temporal completa de um KPI;</li>
- *   <li>Converter registros históricos em {@link KPIData};</li>
- *   <li>Selecionar releases mais recentes e organizar KPIs para o Painel Consolidado;</li>
- *   <li>Oferecer métodos convenientes para recuperar valores numéricos recentes;</li>
- * </ul>
- *
- * <p>Este serviço atua como intermediário entre o {@link KPIHistoryRepository}
- * (armazenamento) e as partes superiores do sistema, especialmente o
- * {@link com.sysmap.wellness.report.service.KPIEngine} e o
- * {@link com.sysmap.wellness.report.ReportGenerator}.</p>
+ * Serviço responsável por manipular e consultar o histórico dos KPIs,
+ * agora incluindo a regra de congelamento de releases:
+ * <p>
+ * 1) Releases antigas não podem ser atualizadas.
+ * 2) Apenas a release mais recente pode receber novos snapshots.
+ * 3) Releases inexistentes são registradas normalmente.
  */
 public class KPIHistoryService {
 
     private final KPIHistoryRepository repository;
 
-    /**
-     * Construtor padrão. Inicializa o serviço utilizando uma instância nova
-     * de {@link KPIHistoryRepository}.
-     */
     public KPIHistoryService() {
         this.repository = new KPIHistoryRepository();
     }
 
-    /**
-     * Construtor alternativo permitindo injetar um repositório customizado.
-     * Útil para testes unitários ou cenários personalizados.
-     *
-     * @param repository Instância customizada do repositório de histórico.
-     */
     public KPIHistoryService(KPIHistoryRepository repository) {
         this.repository = repository;
     }
 
+    // ============================================================
+    //  NOVA REGRA APLICADA AQUI
+    // ============================================================
+
     /**
-     * Salva todos os KPIs calculados para um projeto e release no repositório
-     * de histórico. Cada KPI é registrado como um {@link KPIHistoryRecord}
-     * contendo timestamp, valores numéricos, detalhes e metadados.
+     * Salva KPIs calculados para uma release, respeitando:
+     * <p>
+     * - Release inexistente → cria snapshot.
+     * - Release existente e mais recente → atualiza.
+     * - Release existente mas NÃO é a mais recente → ignora (release congelada).
      *
-     * @param project      Nome do projeto.
-     * @param releaseName  Identificador da release relacionada aos KPIs.
-     * @param kpis         Lista de KPIs a serem persistidos.
+     * @param project     Nome do projeto
+     * @param releaseName Identificador completo da release
+     * @param kpis        Lista de KPIs calculados
      */
     public void saveAll(String project, String releaseName, List<KPIData> kpis) {
-        repository.save(project, releaseName, kpis);
+        List<KPIHistoryRecord> history = repository.loadAll(project);
+
+        boolean releaseExists = history.stream()
+            .anyMatch(r -> r.getReleaseName().equals(releaseName));
+
+        String newest = getNewestRelease(history);
+
+        // Caso 1 — Release nunca registrada → criar snapshot
+        if (!releaseExists) {
+            repository.save(project, releaseName, kpis);
+            log("[KPIHistory] Release nova registrada: " + releaseName);
+            return;
+        }
+
+        // Caso 2 — Release é a mais recente → atualizar
+        if (newest == null || newest.equals(releaseName)) {
+            repository.save(project, releaseName, kpis);
+            log("[KPIHistory] Release mais recente atualizada: " + releaseName);
+            return;
+        }
+
+        // Caso 3 — Release antiga → não atualizar
+        log("[KPIHistory] Ignorado: tentativa de atualizar release congelada: "
+            + releaseName + " (mais recente é " + newest + ")");
     }
 
     /**
-     * Obtém o registro histórico mais recente de um KPI específico.
-     *
-     * @param project Nome do projeto.
-     * @param kpiKey  Chave única do KPI.
-     * @return Optional contendo o último registro, caso exista.
+     * Retorna o identificador da release mais recente,
+     * baseado na ordenação natural das strings.
      */
+    private String getNewestRelease(List<KPIHistoryRecord> history) {
+        return history.stream()
+            .map(KPIHistoryRecord::getReleaseName)
+            .sorted()
+            .reduce((a, b) -> b) // pega o último
+            .orElse(null);
+    }
+
+    // ============================================================
+    //  MÉTODOS EXISTENTES — NÃO ALTERADOS
+    // ============================================================
+
     public Optional<KPIHistoryRecord> getLast(String project, String kpiKey) {
         return repository.loadLast(project, kpiKey);
     }
 
-    /**
-     * Obtém a série temporal completa de um KPI, ordenada por timestamp.
-     *
-     * @param project Nome do projeto.
-     * @param kpiKey  Identificador do KPI desejado.
-     * @return Lista ordenada de {@link KPIHistoryRecord} para esse KPI.
-     */
     public List<KPIHistoryRecord> getTrend(String project, String kpiKey) {
         return repository.loadByKPI(project, kpiKey);
     }
 
-    /**
-     * Retorna o último valor numérico registrado para o KPI solicitado.
-     * Caso não haja registro ou o valor seja inválido/non-numérico,
-     * retorna 0.0.
-     *
-     * @param project Nome do projeto.
-     * @param kpiKey  Identificador do KPI.
-     * @return Valor numérico mais recente ou 0.0 se indisponível.
-     */
     public double getLastValueAsDouble(String project, String kpiKey) {
         return repository.loadLast(project, kpiKey)
             .map(record -> {
@@ -110,35 +108,6 @@ public class KPIHistoryService {
             .orElse(0.0);
     }
 
-    // ---------------------------------------------------------------------
-    // NOVO: fornece dados prontos para o Painel Consolidado
-    // ---------------------------------------------------------------------
-
-    /**
-     * Carrega os KPIs necessários para o Painel Consolidado, respeitando:
-     *
-     * <ul>
-     *   <li>Somente KPIs cujas chaves constam em {@code selectedKpiKeys};</li>
-     *   <li>Organização por release, selecionando apenas os registros MAIS RECENTES;</li>
-     *   <li>Ordenação de releases do mais recente para o mais antigo;</li>
-     *   <li>Limitação opcional de releases via {@code maxReleases};</li>
-     *   <li>Conversão de {@link KPIHistoryRecord} para {@link KPIData};</li>
-     * </ul>
-     *
-     * Estrutura retornada:
-     * <pre>
-     *   [ KPIData(kpiA, releaseX),
-     *     KPIData(kpiB, releaseX),
-     *     KPIData(kpiA, releaseW),
-     *     KPIData(kpiB, releaseW),
-     *     ... ]
-     * </pre>
-     *
-     * @param project          Nome do projeto.
-     * @param selectedKpiKeys  Lista de KPIs que devem ser exibidos no painel.
-     * @param maxReleases      Quantidade máxima de releases (0 = todas).
-     * @return Lista linear de KPIData, organizada por release e KPI.
-     */
     public List<KPIData> loadForPanel(
         String project,
         List<String> selectedKpiKeys,
@@ -151,7 +120,6 @@ public class KPIHistoryService {
 
         Set<String> selectedSet = new HashSet<>(selectedKpiKeys);
 
-        // Filtra apenas os KPIs selecionados
         List<KPIHistoryRecord> filtered = all.stream()
             .filter(r -> selectedSet.contains(r.getKpiName()))
             .collect(Collectors.toList());
@@ -160,7 +128,6 @@ public class KPIHistoryService {
             return Collections.emptyList();
         }
 
-        // Agrupa releases → (kpiKey → registro mais recente)
         Map<String, Map<String, KPIHistoryRecord>> byRelease = new HashMap<>();
 
         for (KPIHistoryRecord r : filtered) {
@@ -177,7 +144,6 @@ public class KPIHistoryService {
                 );
         }
 
-        // Releases ordenadas (mais recente primeiro)
         List<String> releases = new ArrayList<>(byRelease.keySet());
         releases.sort(Comparator.reverseOrder());
 
@@ -203,18 +169,6 @@ public class KPIHistoryService {
         return result;
     }
 
-    /**
-     * Converte um {@link KPIHistoryRecord} para um {@link KPIData}, aplicando:
-     * <ul>
-     *   <li>Extração de nome, valor, formatação e metadados;</li>
-     *   <li>Conversão segura para número caso o valor seja textual;</li>
-     *   <li>Fallbacks para valores ausentes;</li>
-     *   <li>Mapeamento de detalhes adicionais (percentual, símbolos de tendência etc.);</li>
-     * </ul>
-     *
-     * @param rec Registro histórico carregado do repositório.
-     * @return KPIData correspondente ao registro.
-     */
     private KPIData convertRecordToKPIData(KPIHistoryRecord rec) {
 
         JSONObject details = rec.getDetails() != null ? rec.getDetails() : new JSONObject();
@@ -229,7 +183,8 @@ public class KPIHistoryService {
         } else if (raw != null) {
             try {
                 valueNum = Double.parseDouble(String.valueOf(raw));
-            } catch (NumberFormatException ignored) {}
+            } catch (NumberFormatException ignored) {
+            }
         }
 
         String formattedValue = details.has("formattedValue")
@@ -241,7 +196,7 @@ public class KPIHistoryService {
         boolean percent = details.optBoolean("percent", false);
 
         String project = rec.getProject();
-        String group = rec.getReleaseName(); // usado como releaseId no relatório
+        String group = rec.getReleaseName();
 
         return new KPIData(
             key,
@@ -255,4 +210,24 @@ public class KPIHistoryService {
             group
         );
     }
+
+    private void log(String msg) {
+        System.out.println(msg);
+    }
+
+    /**
+     * Retorna todos os registros de histórico de um projeto.
+     * Necessário para o KPIEngine decidir:
+     * <p>
+     * - Releases que já possuem snapshot (e podem estar congeladas)
+     * - Releases que são novas no sistema (e precisam ser processadas)
+     * - Qual release é a mais recente no histórico
+     *
+     * @param project Nome do projeto.
+     * @return Lista completa de KPIHistoryRecord.
+     */
+    public List<KPIHistoryRecord> getAllHistory(String project) {
+        return repository.loadAll(project);
+    }
+
 }

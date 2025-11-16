@@ -45,7 +45,7 @@ exports/
 generated/
 data/
 cache/
-#docs/
+docs/
 
 # Arquivos de exportação (relatórios, planilhas, etc.)
 *.csv

@@ -48,36 +48,83 @@ import java.util.*;
  */
 public class ExecutiveConsolidatedSheet {
 
-    /** KPIs que devem aparecer no Painel Consolidado. */
+    // =========================================================================
+    //  NOVO: agora os KPIs são carregados dinamicamente do config.properties
+    // =========================================================================
+
+    /**
+     * Lê a ordem dos KPIs definida no arquivo config.properties.
+     * Exemplo:
+     *
+     * panel.kpis=plannedScope,releaseCoverage
+     */
+    private static List<String> loadPanelKpis() {
+        Properties props = new Properties();
+
+        try (InputStream in = ExecutiveConsolidatedSheet.class
+            .getResourceAsStream("/config/config.properties")) {
+            if (in != null) props.load(in);
+        } catch (Exception ignored) {}
+
+        String raw = props.getProperty("panel.kpis", "").trim();
+        if (raw.isEmpty()) return Collections.emptyList();
+
+        List<String> list = new ArrayList<>();
+        for (String k : raw.split(",")) {
+            if (!k.isBlank()) list.add(k.trim());
+        }
+        return list;
+    }
+
+    /**
+     * Lê labels amigáveis dos KPIs definidos no arquivo config.properties.
+     * Exemplo:
+     *
+     * panel.kpiLabels.plannedScope=Escopo planejado
+     */
+    private static Map<String, String> loadPanelKpiLabels() {
+        Properties props = new Properties();
+
+        try (InputStream in = ExecutiveConsolidatedSheet.class
+            .getResourceAsStream("/config/config.properties")) {
+            if (in != null) props.load(in);
+        } catch (Exception ignored) {}
+
+        Map<String, String> map = new LinkedHashMap<>();
+
+        for (String name : props.stringPropertyNames()) {
+            if (name.startsWith("panel.kpiLabels.")) {
+                String key = name.substring("panel.kpiLabels.".length());
+                String value = props.getProperty(name);
+                map.put(key, value);
+            }
+        }
+
+        return map;
+    }
+
+    // =========================================================================
+    //  ATENÇÃO: Os campos SELECTED_KPIS e KPI_LABELS permanecem aqui APENAS
+    //  porque fazem parte da documentação original, mas não são mais usados.
+    // =========================================================================
+
+    /** (OBSOLETO) KPIs que devem aparecer no Painel Consolidado – agora vem do config.properties. */
+    @Deprecated
     private static final List<String> SELECTED_KPIS = List.of("escopo_planejado");
 
-    /** Labels legíveis para os KPIs exibidos no painel. */
+    /** (OBSOLETO) Labels legíveis dos KPIs – agora vem do config.properties. */
+    @Deprecated
     private static final Map<String, String> KPI_LABELS = Map.of(
         "escopo_planejado", "Escopo planejado"
     );
 
     /**
      * Cria a aba "Painel Consolidado" dentro do workbook Excel.
-     *
-     * <p>Fluxo de execução:</p>
-     * <ol>
-     *     <li>Cria a planilha e define o cabeçalho;</li>
-     *     <li>Lê o número máximo de releases permitido pela configuração;</li>
-     *     <li>Para cada projeto, carrega todo o histórico de KPIs;</li>
-     *     <li>Agrupa registros por release e seleciona os mais recentes;</li>
-     *     <li>Escreve as linhas do painel com Projeto | Release | KPIs;</li>
-     *     <li>Aplica formatação numérica básica.</li>
-     * </ol>
-     *
-     * @param wb                Workbook principal onde a aba será criada.
-     * @param kpisByProject     KPIs calculados por projeto (não utilizados diretamente aqui,
-     *                          mas mantidos por compatibilidade futura).
-     * @param releaseByProject  Mapa auxiliar (não mais utilizado como fonte principal).
      */
     public static void create(
         XSSFWorkbook wb,
         Map<String, List<KPIData>> kpisByProject,
-        Map<String, String> releaseByProject // hoje não usamos mais, mantido por compat.
+        Map<String, String> releaseByProject
     ) {
 
         Sheet sheet = wb.createSheet("Painel Consolidado");
@@ -94,14 +141,18 @@ public class ExecutiveConsolidatedSheet {
         header.createCell(0).setCellValue("Projeto");
         header.createCell(1).setCellValue("Release");
 
+        // ---- NOVO: KPIs e labels carregados dinamicamente
+        List<String> selectedKpis = loadPanelKpis();
+        Map<String, String> labels = loadPanelKpiLabels();
+
         int colIndex = 2;
-        for (String kpiKey : SELECTED_KPIS) {
-            String label = KPI_LABELS.getOrDefault(kpiKey, kpiKey);
+        for (String kpiKey : selectedKpis) {
+            String label = labels.getOrDefault(kpiKey, kpiKey);
             header.createCell(colIndex++).setCellValue(label);
         }
 
         // ========================================================
-        // 2) Config: quantas releases serão exibidas no painel
+        // 2) Config: quantas releases serão exibidas
         // ========================================================
         int maxReleases = resolveMaxReleases();
 
@@ -113,16 +164,14 @@ public class ExecutiveConsolidatedSheet {
         // ========================================================
         for (String project : kpisByProject.keySet()) {
 
-            // Carrega todo o histórico salvo do projeto
             List<KPIHistoryRecord> history = historyRepo.loadAll(project);
 
-            // release → (kpiKey → registro mais recente)
             Map<String, Map<String, KPIHistoryRecord>> byRelease = new HashMap<>();
 
             for (KPIHistoryRecord r : history) {
 
                 String kpiKey = r.getKpiName();
-                if (!SELECTED_KPIS.contains(kpiKey)) continue;
+                if (!selectedKpis.contains(kpiKey)) continue;
 
                 String release = r.getRelease();
                 if (release == null || release.isBlank()) continue;
@@ -131,27 +180,23 @@ public class ExecutiveConsolidatedSheet {
                 Map<String, KPIHistoryRecord> kpiMap = byRelease.get(release);
 
                 KPIHistoryRecord existing = kpiMap.get(kpiKey);
+
                 if (existing == null || r.getTimestamp().isAfter(existing.getTimestamp())) {
                     kpiMap.put(kpiKey, r);
                 }
             }
 
-            if (byRelease.isEmpty()) {
-                // Nenhum histórico disponível (provável primeira execução)
-                continue;
-            }
+            if (byRelease.isEmpty()) continue;
 
-            // Releases ordenadas da mais recente para a mais antiga
             List<String> releases = new ArrayList<>(byRelease.keySet());
             releases.sort(Comparator.reverseOrder());
 
-            // Limita conforme configuração
             if (maxReleases > 0 && releases.size() > maxReleases) {
                 releases = releases.subList(0, maxReleases);
             }
 
             // ========================================================
-            // 4) Preenche linhas do painel
+            // 4) Preenche linhas
             // ========================================================
             for (String release : releases) {
 
@@ -163,16 +208,18 @@ public class ExecutiveConsolidatedSheet {
 
                 Map<String, KPIHistoryRecord> kpiMap = byRelease.get(release);
 
-                for (String kpiKey : SELECTED_KPIS) {
+                for (String kpiKey : selectedKpis) {
                     Cell cell = row.createCell(colIndex++);
 
                     KPIHistoryRecord rec = kpiMap.get(kpiKey);
+
                     if (rec == null || rec.getValue() == null) {
-                        cell.setBlank();
+                        cell.setCellValue("N/A");  // agora mostramos N/A
                         continue;
                     }
 
                     double val;
+
                     try {
                         val = Double.parseDouble(String.valueOf(rec.getValue()));
                     } catch (NumberFormatException e) {
@@ -187,18 +234,7 @@ public class ExecutiveConsolidatedSheet {
     }
 
     /**
-     * Lê o valor configurado para <code>report.kpi.maxReleases</code> no arquivo
-     * <code>config.properties</code>.
-     *
-     * <p>Regras:</p>
-     * <ul>
-     *     <li><b>1</b> (default) → exibe apenas a release atual;</li>
-     *     <li><b>0</b> → exibe todas as releases disponíveis;</li>
-     *     <li><b>N</b> → exibe apenas as N releases mais recentes;</li>
-     *     <li>Valores inválidos → retorna 1.</li>
-     * </ul>
-     *
-     * @return Quantidade máxima de releases por projeto.
+     * Lê o valor configurado para <code>report.kpi.maxReleases</code> no config.properties.
      */
     private static int resolveMaxReleases() {
         Properties props = new Properties();

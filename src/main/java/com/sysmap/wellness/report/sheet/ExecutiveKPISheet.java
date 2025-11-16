@@ -5,6 +5,7 @@ import org.apache.poi.ss.usermodel.*;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 
 import java.util.List;
+import java.util.Map;
 
 /**
  * Gera a aba <b>Resumo Executivo</b> para um único projeto.
@@ -16,7 +17,7 @@ import java.util.List;
  * <ul>
  *     <li><b>Release</b> – identifica a release correspondente aos KPIs;</li>
  *     <li><b>KPI</b> – nome amigável do indicador;</li>
- *     <li><b>Valor</b> – valor numérico do KPI (duas casas decimais).</li>
+ *     <li><b>Valor</b> – valor do KPI; o formato depende do tipo do indicador.</li>
  * </ul>
  *
  * <p>A aba é criada separadamente para cada projeto, normalmente nomeada como
@@ -26,8 +27,14 @@ import java.util.List;
  * <ul>
  *     <li>Os KPIs exibidos dependem apenas da lista recebida no parâmetro {@code kpis};</li>
  *     <li>Todos os registros usam o mesmo {@code currentReleaseId};</li>
- *     <li>Os valores são tratados como numéricos e formatados com 2 casas decimais;</li>
- *     <li>A planilha não realiza ordenação nem extração de dados adicionais.</li>
+ *     <li>A ordem dos KPIs exibidos é a mesma recebida pelo {@code List<KPIData>};</li>
+ *     <li>Valores são formatados de acordo com o tipo do KPI:
+ *          <ul>
+ *              <li><b>plannedScope</b> → inteiro sem casas decimais;</li>
+ *              <li><b>releaseCoverage</b> → porcentagem inteira com símbolo (%);</li>
+ *              <li>Demais KPIs → formato numérico padrão (0.00).</li>
+ *          </ul>
+ *     </li>
  * </ul>
  *
  * <p>É uma aba essencial da visão executiva, complementando o Painel Consolidado.</p>
@@ -35,19 +42,27 @@ import java.util.List;
 public class ExecutiveKPISheet {
 
     /**
+     * Labels amigáveis centralizados para exibição no Resumo Executivo.
+     */
+    private static final Map<String, String> KPI_LABELS = Map.of(
+        "plannedScope", "Escopo planejado",
+        "releaseCoverage", "Cobertura da Release"
+    );
+
+    /**
      * Cria a aba de Resumo Executivo dentro do workbook.
      *
      * <p>Fluxo:</p>
      * <ol>
      *     <li>Cria a planilha com o nome especificado;</li>
-     *     <li>Define um estilo numérico padrão (0.00);</li>
-     *     <li>Insere o cabeçalho com as três colunas principais;</li>
-     *     <li>Insere uma linha para cada KPI informado;</li>
-     *     <li>Atribui o ID da release para todas as linhas.</li>
+     *     <li>Define estilos numéricos adequados (inteiro, porcentagem, decimal);</li>
+     *     <li>Insere o cabeçalho com Release, KPI e Valor;</li>
+     *     <li>Insere as linhas conforme recebidas na lista de KPIs;</li>
+     *     <li>Formata cada KPI conforme seu tipo.</li>
      * </ol>
      *
      * @param wb               Workbook onde a aba será criada.
-     * @param kpis             Lista de {@link KPIData} calculados no run atual.
+     * @param kpis             Lista de {@link KPIData} calculados no run atual (ordem preservada).
      * @param sheetName        Nome da aba que será criada.
      * @param currentReleaseId Identificador da release ativa.
      */
@@ -59,10 +74,18 @@ public class ExecutiveKPISheet {
     ) {
         Sheet sheet = wb.createSheet(sheetName);
 
-        // Estilo numérico com duas casas decimais
-        CellStyle numberStyle = wb.createCellStyle();
-        DataFormat format = wb.createDataFormat();
-        numberStyle.setDataFormat(format.getFormat("0.00"));
+        // Estilo numérico padrão (0.00)
+        CellStyle decimalStyle = wb.createCellStyle();
+        DataFormat df = wb.createDataFormat();
+        decimalStyle.setDataFormat(df.getFormat("0.00"));
+
+        // Estilo inteiro sem casas decimais
+        CellStyle integerStyle = wb.createCellStyle();
+        integerStyle.setDataFormat(df.getFormat("0"));
+
+        // Estilo texto (para exibir "32%")
+        CellStyle percentTextStyle = wb.createCellStyle();
+        percentTextStyle.setDataFormat(df.getFormat("@")); // texto puro
 
         // Cabeçalho
         Row header = sheet.createRow(0);
@@ -72,15 +95,42 @@ public class ExecutiveKPISheet {
 
         int rowIndex = 1;
 
-        // Popula cada KPI em uma linha
+        // ============================================================
+        // Popula cada KPI em uma linha (ordem 100% preservada)
+        // ============================================================
         for (KPIData kpi : kpis) {
+
+            String key = kpi.getKey();
+            String label = KPI_LABELS.getOrDefault(key, kpi.getName());
+
             Row row = sheet.createRow(rowIndex++);
             row.createCell(0).setCellValue(currentReleaseId);
-            row.createCell(1).setCellValue(kpi.getName());
+            row.createCell(1).setCellValue(label);
 
+            // Célula de valor com formatação dependente do KPI
             Cell valCell = row.createCell(2);
-            valCell.setCellValue(kpi.getValue());
-            valCell.setCellStyle(numberStyle);
+
+            switch (key) {
+
+                case "plannedScope":
+                    // inteiro sem casas decimais
+                    valCell.setCellValue(kpi.getValue());
+                    valCell.setCellStyle(integerStyle);
+                    break;
+
+                case "releaseCoverage":
+                    // porcentagem inteira com símbolos — ex.: "32%"
+                    String percentStr = ((int) kpi.getValue()) + "%";
+                    valCell.setCellValue(percentStr);
+                    valCell.setCellStyle(percentTextStyle);
+                    break;
+
+                default:
+                    // demais KPIs → formato decimal padrão
+                    valCell.setCellValue(kpi.getValue());
+                    valCell.setCellStyle(decimalStyle);
+                    break;
+            }
         }
     }
 }
