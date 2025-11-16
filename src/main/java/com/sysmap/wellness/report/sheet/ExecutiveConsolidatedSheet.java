@@ -1,5 +1,6 @@
 package com.sysmap.wellness.report.sheet;
 
+import com.sysmap.wellness.report.excel.ExcelStyleFactory;
 import com.sysmap.wellness.report.kpi.history.KPIHistoryRecord;
 import com.sysmap.wellness.report.kpi.history.KPIHistoryRepository;
 import com.sysmap.wellness.report.service.model.KPIData;
@@ -9,55 +10,8 @@ import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import java.io.InputStream;
 import java.util.*;
 
-/**
- * Gera o <b>Painel Consolidado</b>, aba executiva que apresenta uma visão
- * resumida e histórica dos principais KPIs de cada projeto.
- *
- * <p>Seu objetivo é fornecer uma linha por release, exibindo KPIs consolidados
- * a partir do histórico salvo no diretório de execução
- * ({@code kpi_results.json}). A planilha contém duas colunas fixas:
- * <ul>
- *     <li><b>Projeto</b></li>
- *     <li><b>Release</b></li>
- * </ul>
- * seguidas pelas colunas dos KPIs selecionados.</p>
- *
- * <h2>Fontes de Dados</h2>
- * <ul>
- *     <li>Leitura do histórico via {@link KPIHistoryRepository};</li>
- *     <li>Filtragem dos KPIs configurados em {@link #SELECTED_KPIS};</li>
- *     <li>Agrupamento por release e seleção do registro mais recente de cada KPI;</li>
- *     <li>Limite de releases baseado na configuração:
- *         <code>report.kpi.maxReleases</code>.</li>
- * </ul>
- *
- * <h2>Regras de Negócio</h2>
- * <ul>
- *   <li>Uma linha é criada para cada combinação (Projeto + Release);</li>
- *   <li>Os KPIs exibidos são apenas os definidos em {@link #SELECTED_KPIS};</li>
- *   <li>Para cada KPI e release, seleciona-se o registro mais recente
- *       baseado no timestamp do arquivo histórico;</li>
- *   <li>O número de releases exibidas por projeto respeita a configuração
- *       lida em {@link #resolveMaxReleases()};</li>
- *   <li>Valores não numéricos são convertidos com fallback seguro para 0;</li>
- *   <li>O estilo numérico é aplicado em todas as células de KPIs.</li>
- * </ul>
- *
- * <p>Este painel é utilizado na visão executiva do relatório, servindo como
- * referência rápida de tendências e tamanho da release.</p>
- */
 public class ExecutiveConsolidatedSheet {
 
-    // =========================================================================
-    //  NOVO: agora os KPIs são carregados dinamicamente do config.properties
-    // =========================================================================
-
-    /**
-     * Lê a ordem dos KPIs definida no arquivo config.properties.
-     * Exemplo:
-     *
-     * panel.kpis=plannedScope,releaseCoverage
-     */
     private static List<String> loadPanelKpis() {
         Properties props = new Properties();
 
@@ -76,12 +30,6 @@ public class ExecutiveConsolidatedSheet {
         return list;
     }
 
-    /**
-     * Lê labels amigáveis dos KPIs definidos no arquivo config.properties.
-     * Exemplo:
-     *
-     * panel.kpiLabels.plannedScope=Escopo planejado
-     */
     private static Map<String, String> loadPanelKpiLabels() {
         Properties props = new Properties();
 
@@ -103,24 +51,6 @@ public class ExecutiveConsolidatedSheet {
         return map;
     }
 
-    // =========================================================================
-    //  ATENÇÃO: Os campos SELECTED_KPIS e KPI_LABELS permanecem aqui APENAS
-    //  porque fazem parte da documentação original, mas não são mais usados.
-    // =========================================================================
-
-    /** (OBSOLETO) KPIs que devem aparecer no Painel Consolidado – agora vem do config.properties. */
-    @Deprecated
-    private static final List<String> SELECTED_KPIS = List.of("escopo_planejado");
-
-    /** (OBSOLETO) Labels legíveis dos KPIs – agora vem do config.properties. */
-    @Deprecated
-    private static final Map<String, String> KPI_LABELS = Map.of(
-        "escopo_planejado", "Escopo planejado"
-    );
-
-    /**
-     * Cria a aba "Painel Consolidado" dentro do workbook Excel.
-     */
     public static void create(
         XSSFWorkbook wb,
         Map<String, List<KPIData>> kpisByProject,
@@ -129,26 +59,30 @@ public class ExecutiveConsolidatedSheet {
 
         Sheet sheet = wb.createSheet("Painel Consolidado");
 
-        // Estilo de número inteiro sem casas decimais
-        CellStyle intStyle = wb.createCellStyle();
-        DataFormat format = wb.createDataFormat();
-        intStyle.setDataFormat(format.getFormat("0"));
+        // 🔥 NOVO: centralização de estilos
+        ExcelStyleFactory styles = new ExcelStyleFactory(wb);
 
         // ========================================================
         // 1) Cabeçalho
         // ========================================================
         Row header = sheet.createRow(0);
-        header.createCell(0).setCellValue("Projeto");
-        header.createCell(1).setCellValue("Release");
+        Cell h1 = header.createCell(0);
+        h1.setCellValue("Projeto");
+        h1.setCellStyle(styles.header());
 
-        // ---- NOVO: KPIs e labels carregados dinamicamente
+        Cell h2 = header.createCell(1);
+        h2.setCellValue("Release");
+        h2.setCellStyle(styles.header());
+
         List<String> selectedKpis = loadPanelKpis();
         Map<String, String> labels = loadPanelKpiLabels();
 
         int colIndex = 2;
+
         for (String kpiKey : selectedKpis) {
-            String label = labels.getOrDefault(kpiKey, kpiKey);
-            header.createCell(colIndex++).setCellValue(label);
+            Cell cell = header.createCell(colIndex++);
+            cell.setCellValue(labels.getOrDefault(kpiKey, kpiKey));
+            cell.setCellStyle(styles.header());
         }
 
         // ========================================================
@@ -165,7 +99,6 @@ public class ExecutiveConsolidatedSheet {
         for (String project : kpisByProject.keySet()) {
 
             List<KPIHistoryRecord> history = historyRepo.loadAll(project);
-
             Map<String, Map<String, KPIHistoryRecord>> byRelease = new HashMap<>();
 
             for (KPIHistoryRecord r : history) {
@@ -201,22 +134,33 @@ public class ExecutiveConsolidatedSheet {
             for (String release : releases) {
 
                 Row row = sheet.createRow(rowIndex++);
-                row.createCell(0).setCellValue(project);
-                row.createCell(1).setCellValue(release);
+
+                Cell pCell = row.createCell(0);
+                pCell.setCellValue(project);
+                pCell.setCellStyle(styles.text());
+
+                Cell rCell = row.createCell(1);
+                rCell.setCellValue(release);
+                rCell.setCellStyle(styles.text());
 
                 colIndex = 2;
 
                 Map<String, KPIHistoryRecord> kpiMap = byRelease.get(release);
 
                 for (String kpiKey : selectedKpis) {
+
                     Cell cell = row.createCell(colIndex++);
 
                     KPIHistoryRecord rec = kpiMap.get(kpiKey);
 
                     if (rec == null || rec.getValue() == null) {
-                        cell.setCellValue("N/A");  // agora mostramos N/A
+                        cell.setCellValue("N/A");
+                        cell.setCellStyle(styles.text());
                         continue;
                     }
+
+                    // 🔥 Percentuais → formato “0%”
+                    boolean isPercent = kpiKey.endsWith("Pct") || kpiKey.contains("Percent");
 
                     double val;
 
@@ -226,16 +170,13 @@ public class ExecutiveConsolidatedSheet {
                         val = 0.0;
                     }
 
-                    cell.setCellValue(val);
-                    cell.setCellStyle(intStyle);
+                    cell.setCellValue(val / (isPercent ? 100.0 : 1.0));
+                    cell.setCellStyle(isPercent ? styles.numberPercent() : styles.numberInt());
                 }
             }
         }
     }
 
-    /**
-     * Lê o valor configurado para <code>report.kpi.maxReleases</code> no config.properties.
-     */
     private static int resolveMaxReleases() {
         Properties props = new Properties();
         try (InputStream in = ExecutiveConsolidatedSheet.class
@@ -243,8 +184,7 @@ public class ExecutiveConsolidatedSheet {
             if (in != null) {
                 props.load(in);
             }
-        } catch (Exception ignored) {
-        }
+        } catch (Exception ignored) {}
 
         String raw = props.getProperty("report.kpi.maxReleases", "1").trim();
         try {
