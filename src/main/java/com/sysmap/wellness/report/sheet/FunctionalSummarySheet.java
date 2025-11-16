@@ -9,18 +9,71 @@ import org.json.JSONObject;
 import java.util.Map;
 
 /**
- * Cria a aba "Resumo por Funcionalidade" do relatório Excel,
- * aplicando estilos padronizados via {@link ReportStyleManager}.
- * Agora suporta múltiplos projetos, com nome da aba definido dinamicamente.
+ * Gera a aba <b>"Resumo por Funcionalidade"</b> no relatório Excel.
+ *
+ * <p>Esta planilha oferece uma visão agregada das métricas de execução
+ * e qualidade por suíte (funcionalidade) de cada projeto, reunindo:</p>
+ *
+ * <ul>
+ *   <li>Total de casos;</li>
+ *   <li>Casos executados, aprovados, falhados, abortados e não executados;</li>
+ *   <li>Percentual de execução;</li>
+ *   <li>Volume de defeitos por status (abertos, fechados, ignorados);</li>
+ *   <li>Percentual de bugs relacionados à execução.</li>
+ * </ul>
+ *
+ * <h2>Características principais</h2>
+ * <ul>
+ *   <li>Suporte a múltiplos projetos em uma única aba;</li>
+ *   <li>Cabeçalho padronizado e estilos aplicados via {@link ReportStyleManager};</li>
+ *   <li>Criação de blocos de totais por projeto e total geral consolidado;</li>
+ *   <li>Cálculo interno de métricas e percentuais por funcionalidade e por projeto.</li>
+ * </ul>
+ *
+ * <p>O conteúdo consumido por esta aba é pré-processado por
+ * {@code FunctionalSummaryService}, que entrega um JSON no formato:</p>
+ * <pre>
+ *   {
+ *     "functionalities": [
+ *        { "suiteName": "Login", "totalCases": 12, "executed": 10, ... },
+ *        ...
+ *     ]
+ *   }
+ * </pre>
+ *
+ * <p>A aba utiliza os estilos:</p>
+ * <ul>
+ *   <li><b>"header"</b> — usado no cabeçalho;</li>
+ *   <li><b>"left"</b> — alinhamento textual padrão;</li>
+ *   <li><b>"leftBold"</b> — usado em linhas de total;</li>
+ *   <li><b>"center"</b> — aplicado em células numéricas;</li>
+ *   <li><b>"total"</b> — estilo destacado para agregados.</li>
+ * </ul>
+ *
+ * <p>Ao final, é incrementado o contador
+ * {@code functionalSummarySheetsCreated} no {@link MetricsCollector}.</p>
  */
 public class FunctionalSummarySheet {
 
     /**
-     * Cria a planilha de resumo funcional.
+     * Cria a planilha completa de resumo funcional para os projetos.
      *
-     * @param wb            workbook destino
-     * @param processedData dados processados (por projeto)
-     * @param sheetName     nome da aba no Excel (ex: "Fully – Resumo Funcional")
+     * <p>Fluxo de execução:</p>
+     * <ol>
+     *   <li>Criação da aba e cabeçalho com estilos;</li>
+     *   <li>Para cada projeto:
+     *       <ul>
+     *         <li>Renderização de todas as funcionalidades;</li>
+     *         <li>Geração de linha TOTAL por projeto com métricas consolidadas;</li>
+     *       </ul>
+     *   </li>
+     *   <li>Geração da linha TOTAL GERAL;</li>
+     *   <li>Aplicação de estilos, logging e coleta de métricas.</li>
+     * </ol>
+     *
+     * @param wb            Workbook de destino.
+     * @param processedData Mapa onde chave = nome do projeto, valor = JSON contendo lista de funcionalidades.
+     * @param sheetName     Nome da aba no Excel.
      */
     public void create(Workbook wb, Map<String, JSONObject> processedData, String sheetName) {
         LoggerUtils.step("📊 Criando planilha: " + sheetName);
@@ -30,12 +83,15 @@ public class FunctionalSummarySheet {
         Row header = sheet.createRow(0);
 
         String[] cols = {
-                "Projeto", "Funcionalidade", "Total Cases", "Executados",
-                "Passaram", "Falharam", "Não Executados", "Abortados",
-                "% Executado", "Bugs Totais", "Bugs Abertos", "Bugs Fechados",
-                "Bugs Ignorados", "% Bugs"
+            "Projeto", "Funcionalidade", "Total Cases", "Executados",
+            "Passaram", "Falharam", "Não Executados", "Abortados",
+            "% Executado", "Bugs Totais", "Bugs Abertos", "Bugs Fechados",
+            "Bugs Ignorados", "% Bugs"
         };
 
+        // ===========================================================
+        // Cabeçalho
+        // ===========================================================
         for (int i = 0; i < cols.length; i++) {
             Cell cell = header.createCell(i);
             cell.setCellValue(cols[i]);
@@ -43,31 +99,43 @@ public class FunctionalSummarySheet {
         }
 
         int rowIdx = 1;
+
+        // Acumuladores globais
         int globalCases = 0, globalExec = 0, globalPass = 0, globalFail = 0, globalNotExec = 0, globalAborted = 0;
         int globalBugsTotal = 0, globalOpen = 0, globalClosed = 0, globalIgnored = 0;
 
+        // ===========================================================
+        // Processamento por projeto
+        // ===========================================================
         for (var entry : processedData.entrySet()) {
             String projectName = entry.getKey();
             JSONObject projectData = entry.getValue();
             JSONArray funcs = projectData.optJSONArray("functionalities");
             if (funcs == null || funcs.isEmpty()) continue;
 
+            // Totais por projeto
             int totalCasesProj = 0, executedProj = 0, passedProj = 0, failedProj = 0, abortedProj = 0;
             int notExecProj = 0, bugsTotalProj = 0, bugsOpenProj = 0, bugsClosedProj = 0, bugsIgnoredProj = 0;
 
+            // =======================================================
+            // Linhas por funcionalidade
+            // =======================================================
             for (int i = 0; i < funcs.length(); i++) {
                 JSONObject f = funcs.getJSONObject(i);
                 Row row = sheet.createRow(rowIdx++);
                 int col = 0;
 
+                // Projeto
                 Cell projCell = row.createCell(col++);
                 projCell.setCellValue(projectName);
                 projCell.setCellStyle(styles.get("left"));
 
+                // Nome da funcionalidade
                 Cell funcCell = row.createCell(col++);
                 funcCell.setCellValue(f.optString("suiteName", "<sem título>"));
                 funcCell.setCellStyle(styles.get("left"));
 
+                // Métricas numéricas da funcionalidade
                 row.createCell(col++).setCellValue(f.optInt("totalCases"));
                 row.createCell(col++).setCellValue(f.optInt("executed"));
                 row.createCell(col++).setCellValue(f.optInt("passed"));
@@ -81,9 +149,11 @@ public class FunctionalSummarySheet {
                 row.createCell(col++).setCellValue(f.optInt("bugsIgnored"));
                 row.createCell(col++).setCellValue(f.optInt("percBugs") + "%");
 
+                // Centraliza todas as métricas
                 for (int c = 2; c < cols.length; c++)
                     row.getCell(c).setCellStyle(styles.get("center"));
 
+                // Acumula totais por projeto
                 totalCasesProj += f.optInt("totalCases");
                 executedProj += f.optInt("executed");
                 passedProj += f.optInt("passed");
@@ -96,8 +166,12 @@ public class FunctionalSummarySheet {
                 bugsIgnoredProj += f.optInt("bugsIgnored");
             }
 
+            // =======================================================
+            // Linha de TOTAL do projeto
+            // =======================================================
             Row totalRow = sheet.createRow(rowIdx++);
             int col = 0;
+
             totalRow.createCell(col++).setCellValue("TOTAL " + projectName);
             totalRow.getCell(0).setCellStyle(styles.get("leftBold"));
 
@@ -120,6 +194,7 @@ public class FunctionalSummarySheet {
             for (int c = 2; c < cols.length; c++)
                 totalRow.getCell(c).setCellStyle(styles.get("total"));
 
+            // Acumula totais globais
             globalCases += totalCasesProj;
             globalExec += executedProj;
             globalPass += passedProj;
@@ -131,13 +206,20 @@ public class FunctionalSummarySheet {
             globalClosed += bugsClosedProj;
             globalIgnored += bugsIgnoredProj;
 
+            // Linha em branco separadora
             rowIdx++;
         }
 
+        // ===========================================================
+        // TOTAL GERAL
+        // ===========================================================
         Row globalRow = sheet.createRow(rowIdx++);
+
         globalRow.createCell(0).setCellValue("TOTAL GERAL");
         globalRow.getCell(0).setCellStyle(styles.get("leftBold"));
+
         globalRow.createCell(1).setCellValue("");
+
         globalRow.createCell(2).setCellValue(globalCases);
         globalRow.createCell(3).setCellValue(globalExec);
         globalRow.createCell(4).setCellValue(globalPass);

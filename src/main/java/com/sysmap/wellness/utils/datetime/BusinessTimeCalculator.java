@@ -4,62 +4,114 @@ import java.time.*;
 import java.time.temporal.ChronoUnit;
 
 /**
- * Calcula o tempo útil entre duas datas, considerando:
- * - Dias úteis configurados em WorkSchedule
- * - Feriados de holidays.json
- * - Horários de expediente
- * - Intervalo de almoço
+ * <h1>BusinessTimeCalculator</h1>
+ *
+ * <p>
+ * Classe responsável por calcular o <b>tempo útil</b> (tempo realmente trabalhado)
+ * entre duas datas/horários, considerando:
+ * </p>
+ *
+ * <ul>
+ *   <li>Dias úteis configurados em {@link WorkSchedule};</li>
+ *   <li>Períodos de expediente (ex.: manhã e tarde);</li>
+ *   <li>Intervalo de almoço;</li>
+ *   <li>Feriados definidos no arquivo {@code holidays.json};</li>
+ *   <li>Ajustes automáticos de horários que caem fora do expediente;</li>
+ *   <li>Avanço automático para o próximo dia útil quando necessário.</li>
+ * </ul>
+ *
+ * <p>
+ * O cálculo é realizado minuto a minuto dentro de períodos válidos,
+ * retornando um tempo total no formato <b>HH:mm</b>.
+ * </p>
+ *
+ * <h2>Exemplo de uso:</h2>
+ * <pre>
+ * WorkSchedule schedule = new WorkSchedule();
+ * BusinessTimeCalculator btc = new BusinessTimeCalculator(schedule);
+ *
+ * String t = btc.calculateBusinessTime(
+ *     LocalDateTime.of(2025, 1, 10, 10, 30),
+ *     LocalDateTime.of(2025, 1, 12, 16, 00)
+ * );
+ * // Saída: "10:30" (depende dos períodos configurados)
+ * </pre>
  */
 public class BusinessTimeCalculator {
 
+    /** Configuração completa de expediente, períodos e feriados. */
     private final WorkSchedule schedule;
 
+    /**
+     * Constrói um novo calculador de tempo útil baseado em um {@link WorkSchedule}.
+     *
+     * @param schedule Configuração contendo períodos, dias úteis e feriados.
+     */
     public BusinessTimeCalculator(WorkSchedule schedule) {
         this.schedule = schedule;
     }
 
     /**
-     * Calcula o tempo útil entre duas datas no formato HH:mm.
+     * <h2>Calcula o tempo útil entre duas datas.</h2>
+     *
+     * <p>
+     * O cálculo respeita:
+     * </p>
+     * <ul>
+     *   <li>Feriados (não contam tempo);</li>
+     *   <li>Fins de semana (não contam tempo);</li>
+     *   <li>Períodos definidos em {@link WorkSchedule#getPeriods()};</li>
+     *   <li>Ajuste automático do horário inicial/final caso estejam fora do expediente.</li>
+     * </ul>
+     *
+     * <p>
+     * Se a data final é anterior à inicial, retorna <code>"00:00"</code>.
+     * </p>
+     *
      * @param start Data/hora inicial
-     * @param end Data/hora final
-     * @return Tempo útil em HH:mm
+     * @param end   Data/hora final
+     * @return Tempo útil total no formato HH:mm
      */
     public String calculateBusinessTime(LocalDateTime start, LocalDateTime end) {
         if (start == null || end == null || end.isBefore(start)) {
             return "00:00";
         }
 
+        // Ajusta horários fora do expediente para os limites válidos
         LocalDateTime current = schedule.adjustStartDateTime(start);
-        LocalDateTime finish = schedule.adjustEndDateTime(end);
+        LocalDateTime finish  = schedule.adjustEndDateTime(end);
         long totalMinutes = 0;
 
-        // percorre cronologicamente, somando apenas minutos úteis
+        // Percorre minuto a minuto dentro dos períodos úteis
         while (current.isBefore(finish)) {
             LocalDate currentDate = current.toLocalDate();
 
-            // pula fins de semana e feriados
+            // Se for feriado ou final de semana, pula para o próximo dia útil
             if (!schedule.isWorkingDay(currentDate)) {
                 current = LocalDateTime.of(
-                        schedule.getNextWorkingDay(currentDate),
-                        schedule.getPeriods().get(0).getStart());
+                    schedule.getNextWorkingDay(currentDate),
+                    schedule.getPeriods().get(0).getStart());
                 continue;
             }
 
             boolean moved = false;
 
+            // Varre todos os períodos do dia (manhã e tarde, por exemplo)
             for (WorkingPeriod period : schedule.getPeriods()) {
                 LocalDateTime periodStart = LocalDateTime.of(currentDate, period.getStart());
-                LocalDateTime periodEnd = LocalDateTime.of(currentDate, period.getEnd());
+                LocalDateTime periodEnd   = LocalDateTime.of(currentDate, period.getEnd());
 
-                // se ainda não começou o expediente, avança para o início
+                // Antes do expediente → move para o início do período
                 if (current.isBefore(periodStart)) {
                     current = periodStart;
                 }
 
-                // se já passou do expediente, pula para o próximo período
-                if (current.isAfter(periodEnd)) continue;
+                // Depois do expediente → ignora período
+                if (current.isAfter(periodEnd)) {
+                    continue;
+                }
 
-                // calcula o fim efetivo dentro deste período
+                // Determina o fim deste segmento com base no horário final geral
                 LocalDateTime segmentEnd = finish.isBefore(periodEnd) ? finish : periodEnd;
 
                 if (segmentEnd.isAfter(current)) {
@@ -68,21 +120,26 @@ public class BusinessTimeCalculator {
                     moved = true;
                 }
 
-                // se chegou no horário final, encerra
                 if (!current.isBefore(finish)) break;
             }
 
-            // se não se moveu dentro de nenhum período, avança para o próximo dia útil
+            // Não conseguiu avançar dentro de nenhum período → pula para próximo dia útil
             if (!moved) {
                 current = LocalDateTime.of(
-                        schedule.getNextWorkingDay(currentDate),
-                        schedule.getPeriods().get(0).getStart());
+                    schedule.getNextWorkingDay(currentDate),
+                    schedule.getPeriods().get(0).getStart());
             }
         }
 
         return formatTime(totalMinutes);
     }
 
+    /**
+     * Converte minutos totais para o formato <b>HH:mm</b>.
+     *
+     * @param totalMinutes Minutos acumulados
+     * @return String formatada no padrão HH:mm
+     */
     private String formatTime(long totalMinutes) {
         long hours = totalMinutes / 60;
         long minutes = totalMinutes % 60;
