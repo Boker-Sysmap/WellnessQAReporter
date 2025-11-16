@@ -34,12 +34,16 @@ public class KPIData {
     }
 
     // Factory simplificado
-    public static KPIData simple(String name, double value, String project, String group) {
-
-        String key = name.toLowerCase()
-            .replace(" ", "_")
-            .replace("-", "_")
-            .replaceAll("[^a-z0-9_]", "");
+    /**
+     * Factory simplificado para criação de KPIs com key explícito.
+     *
+     * @param key Identificador técnico do KPI (ex.: "plannedScope")
+     * @param name Nome amigável (ex.: "Escopo planejado")
+     * @param value Valor numérico bruto
+     * @param project Projeto ao qual o KPI pertence
+     * @param group Release/grupo associado
+     */
+    public static KPIData of(String key, String name, double value, String project, String group) {
 
         String formatted = String.format("%.0f", value);
 
@@ -55,6 +59,7 @@ public class KPIData {
             group
         );
     }
+
 
     // ==== NOVO MÉTODO: suporte nativo a múltiplas releases ====
     public KPIData withGroup(String newGroup) {

@@ -1,112 +1,270 @@
 package com.sysmap.wellness.report.service;
 
 import com.sysmap.wellness.report.service.kpi.ScopeKPIService;
-import com.sysmap.wellness.report.service.kpi.KPIReleaseCoverageService;
 import com.sysmap.wellness.report.service.model.KPIData;
 import com.sysmap.wellness.utils.LoggerUtils;
+import com.sysmap.wellness.utils.ReleaseUtils;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.util.*;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
+import java.util.ArrayList;
+import java.util.List;
 
 /**
- * Serviço legado responsável pelo cálculo de KPIs em contexto de um único projeto.
+ * Serviço responsável pelo cálculo dos KPIs base de uma release,
+ * antes da etapa multi-release realizada no KPIEngine.
  *
- * (documentação original preservada)
+ * Todos os KPIs retornados por este serviço utilizam keys técnicas fixas
+ * para garantir consistência histórica e integridade dos dashboards.
  */
 public class KPIService {
 
-    /** Serviço especializado para cálculo do KPI de Escopo (plannedScope). */
-    private final ScopeKPIService scopeKPI = new ScopeKPIService();
-
-    /** Serviço especializado para cálculo do KPI de Cobertura da Release (releaseCoverage). */
-    private final KPIReleaseCoverageService coverageKPI = new KPIReleaseCoverageService();
-
-    /** Regex de identificação de ReleaseId em Test Plans. */
-    private static final Pattern RELEASE_PATTERN =
-        Pattern.compile("^([A-Z0-9_]+)-(\\d{4})-(\\d{2})-(R\\d{2}).*");
+    private final ScopeKPIService scopeKpi = new ScopeKPIService();
 
     /**
-     * Executa o pipeline de cálculo de KPIs para um único projeto.
+     * Calcula todos os KPIs base para um consolidated já filtrado pela release.
      */
     public List<KPIData> calculateKPIs(JSONObject consolidated, String project) {
 
-        LoggerUtils.section("📊 Calculando KPIs — Projeto: " + project);
+        List<KPIData> list = new ArrayList<>();
 
-        List<KPIData> result = new ArrayList<>();
+        LoggerUtils.section("📊 Calculando KPIs BASE para " + project);
 
-        // Detecta release principal
-        String releaseId = detectReleaseId(consolidated, project);
+        // --------------------------------------------------------------------
+        // 1. Identificar a release do consolidated filtrado (CORRIGIDO)
+        // --------------------------------------------------------------------
+        String releaseId = extractReleaseFromFiltered(consolidated);
 
-        if (releaseId == null) {
-            LoggerUtils.warn("⚠ Nenhuma release válida encontrada. KPIs não podem ser calculados.");
-            return result;
-        }
+        // --------------------------------------------------------------------
+        // 2. Escopo Planejado
+        // --------------------------------------------------------------------
+        KPIData plannedScope = scopeKpi.calculate(consolidated, project, releaseId);
 
-        LoggerUtils.success("🏷 Release ativa: " + releaseId);
+        // Garantimos que a key seja sempre a técnica correta
+        plannedScope = KPIData.of(
+            "plannedScope",
+            "Escopo planejado",
+            plannedScope.getValue(),
+            project,
+            releaseId
+        );
+        list.add(plannedScope);
 
-        // KPI 1 — Escopo Planejado
-        KPIData plannedScope = scopeKPI.calculate(consolidated, project, releaseId);
-        result.add(plannedScope);
+        // --------------------------------------------------------------------
+        // 3. Cobertura da Release
+        // --------------------------------------------------------------------
+        KPIData releaseCoverage = calculateReleaseCoverage(consolidated, project, releaseId);
+        list.add(releaseCoverage);
 
-        // KPI 2 — Cobertura da Release
-        KPIData releaseCoverage = coverageKPI.calculate(consolidated, project, releaseId);
-        result.add(releaseCoverage);
+        // --------------------------------------------------------------------
+        // 4. Taxas de execução (pass/fail/blocked/unexecuted)
+        // --------------------------------------------------------------------
+        list.addAll(calculateExecutionRates(consolidated, project, releaseId));
 
-        LoggerUtils.success("📦 KPIs calculados: " + result.size());
-        return result;
+        // --------------------------------------------------------------------
+        // 5. Defeitos (se existirem)
+        // --------------------------------------------------------------------
+        KPIData defects = calculateDefects(consolidated, project, releaseId);
+        if (defects != null) list.add(defects);
+
+        return list;
     }
 
-    private String detectReleaseId(JSONObject consolidated, String project) {
+
+    // =====================================================================
+    // KPI: RELEASE COVERAGE  (usa stats.total / stats.passed / stats.failed)
+    // =====================================================================
+    private KPIData calculateReleaseCoverage(
+        JSONObject consolidated,
+        String project,
+        String releaseId
+    ) {
+        JSONArray runs = consolidated.optJSONArray("run");
+        if (runs == null || runs.isEmpty()) {
+            return KPIData.of(
+                "releaseCoverage",
+                "Cobertura da Release",
+                0,
+                project,
+                releaseId
+            );
+        }
+
+        int executed = 0;
+        int total = 0;
+
+        for (int i = 0; i < runs.length(); i++) {
+
+            JSONObject run = runs.optJSONObject(i);
+            if (run == null) continue;
+
+            // Formato novo: bloco stats
+            JSONObject stats = run.optJSONObject("stats");
+            if (stats != null) {
+
+                int sTotal = stats.optInt("total", 0);
+                int sPassed = stats.optInt("passed", 0);
+                int sFailed = stats.optInt("failed", 0);
+
+                total += sTotal;
+                executed += (sPassed + sFailed);
+
+                continue; // skip fallback
+            }
+
+            // Fallback: formato antigo
+            int p = run.optInt("passed", 0);
+            int f = run.optInt("failed", 0);
+            int b = run.optInt("blocked", 0);
+            int u = run.optInt("untested", 0);
+
+            executed += (p + f + b);
+            total += (p + f + b + u);
+        }
+
+        double percent = (total == 0) ? 0 : (executed * 100.0 / total);
+        String formatted = String.format("%.0f%%", percent);
+
+        return new KPIData(
+            "releaseCoverage",
+            "Cobertura da Release",
+            percent,
+            formatted,
+            "→",
+            "Percentual de casos executados ao menos uma vez",
+            true,
+            project,
+            releaseId
+        );
+    }
+
+
+    // =====================================================================
+    // KPIs de Execução
+    // =====================================================================
+    private List<KPIData> calculateExecutionRates(
+        JSONObject consolidated,
+        String project,
+        String releaseId
+    ) {
+        List<KPIData> list = new ArrayList<>();
+
+        JSONArray runs = consolidated.optJSONArray("run");
+        if (runs == null || runs.isEmpty()) return list;
+
+        int passed = 0, failed = 0, blocked = 0, untested = 0;
+        int total = 0;
+
+        for (int i = 0; i < runs.length(); i++) {
+            JSONObject run = runs.optJSONObject(i);
+            if (run == null) continue;
+
+            // Tenta ler do bloco stats (novo)
+            JSONObject stats = run.optJSONObject("stats");
+            if (stats != null) {
+
+                passed   += stats.optInt("passed", 0);
+                failed   += stats.optInt("failed", 0);
+                blocked  += stats.optInt("blocked", 0);
+                untested += stats.optInt("untested", 0);
+
+                total += stats.optInt("total", 0);
+                continue;
+            }
+
+            // Formato antigo
+            passed   += run.optInt("passed", 0);
+            failed   += run.optInt("failed", 0);
+            blocked  += run.optInt("blocked", 0);
+            untested += run.optInt("untested", 0);
+        }
+
+        if (total == 0) total = 1;
+
+        list.add(percentKpi("passedRate",     "Taxa de Pass",      project, releaseId, passed, total));
+        list.add(percentKpi("failedRate",     "Taxa de Falha",     project, releaseId, failed, total));
+        list.add(percentKpi("blockedRate",    "Taxa de Bloqueio",  project, releaseId, blocked, total));
+        list.add(percentKpi("unexecutedRate", "Não executados",    project, releaseId, untested, total));
+
+        list.add(KPIData.of(
+            "totalExecuted",
+            "Total Executado",
+            passed + failed + blocked,
+            project,
+            releaseId
+        ));
+
+        return list;
+    }
+
+    private KPIData percentKpi(
+        String key, String name,
+        String project, String releaseId,
+        int part, int total
+    ) {
+        double value = (part * 100.0 / total);
+        String formatted = String.format("%.0f%%", value);
+
+        return new KPIData(
+            key,
+            name,
+            value,
+            formatted,
+            "→",
+            name,
+            true,
+            project,
+            releaseId
+        );
+    }
+
+
+    // =====================================================================
+    // KPIs de Defeitos
+    // =====================================================================
+    private KPIData calculateDefects(JSONObject consolidated, String project, String releaseId) {
+
+        JSONArray defects = consolidated.optJSONArray("defect");
+        if (defects == null) return null;
+
+        int count = defects.length();
+
+        return KPIData.of(
+            "defectsCount",
+            "Total de Defeitos",
+            count,
+            project,
+            releaseId
+        );
+    }
+
+
+    // =====================================================================
+    // AUXILIAR — Identificar release real do consolidated já filtrado
+    // =====================================================================
+    private String extractReleaseFromFiltered(JSONObject consolidated) {
+
         JSONArray plans = consolidated.optJSONArray("plan");
-        if (plans == null) return null;
-
-        List<String> releases = new ArrayList<>();
-
-        for (int i = 0; i < plans.length(); i++) {
-            JSONObject p = plans.optJSONObject(i);
-            if (p == null) continue;
-
-            String title = p.optString("title", "").trim();
-            if (title.isEmpty()) continue;
-
-            String releaseId = extractReleaseId(title);
-            if (releaseId != null) releases.add(releaseId);
+        if (plans == null || plans.isEmpty()) {
+            return "UNKNOWN-RELEASE";
         }
 
-        if (releases.isEmpty()) {
-            LoggerUtils.warn("⚠ Nenhum Test Plan corresponde ao formato de release para " + project);
-            return null;
+        JSONObject p = plans.optJSONObject(0);
+        if (p == null) {
+            return "UNKNOWN-RELEASE";
         }
 
-        releases.sort(Comparator.reverseOrder());
+        String title = p.optString("title", "").trim();
+        if (title.isEmpty()) {
+            return "UNKNOWN-RELEASE";
+        }
 
-        String latest = releases.get(0);
-        LoggerUtils.info("🔎 Releases detectadas: " + releases);
-        LoggerUtils.success("➡ Release mais recente selecionada: " + latest);
+        // ✔ Usa ReleaseUtils para extrair SOMENTE o ID da release
+        String extracted = ReleaseUtils.extractReleaseIdFromTitle(title);
+        if (extracted != null && !extracted.isBlank()) {
+            return extracted;
+        }
 
-        return latest;
-    }
-
-    private String extractReleaseId(String title) {
-        if (title == null) return null;
-
-        String clean = title
-            .replace("–", "-")
-            .replace(" ", "")
-            .trim()
-            .toUpperCase();
-
-        Matcher m = RELEASE_PATTERN.matcher(clean);
-        if (!m.matches()) return null;
-
-        String proj = m.group(1);
-        String ano  = m.group(2);
-        String mes  = m.group(3);
-        String rnn  = m.group(4);
-
-        return proj + "-" + ano + "-" + mes + "-" + rnn;
+        return "UNKNOWN-RELEASE";
     }
 }
