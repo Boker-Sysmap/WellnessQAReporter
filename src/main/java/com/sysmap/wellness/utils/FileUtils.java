@@ -4,22 +4,33 @@ import java.io.IOException;
 import java.nio.file.*;
 
 /**
- * Classe utilitária responsável pela manipulação de diretórios e caminhos de saída.
+ * Utilitário centralizado para manipulação de diretórios utilizados pelo
+ * WellnessQAReporter.
  *
- * <p>Centraliza todas as operações relacionadas à criação, obtenção e limpeza de diretórios
- * utilizados pelo sistema, garantindo que a estrutura de pastas necessária para geração
- * de relatórios e arquivos JSON esteja sempre disponível.</p>
+ * <p>Esta classe garante que todos os caminhos necessários para geração de
+ * relatórios, exportação de JSONs, snapshots e artefatos de execução sejam
+ * criados e gerenciados de forma segura e padronizada.</p>
  *
- * <p>Por padrão, todas as operações são realizadas dentro do diretório base
- * <code>./output</code>.</p>
+ * <p>Por padrão, todo o conteúdo gerado pelo sistema é armazenado sob o diretório
+ * <strong>{@code ./output}</strong>, que funciona como raiz para:</p>
  *
- * <p>Esta classe é utilizada por diversos serviços (como {@code JsonHandler}, {@code ReportGenerator}, etc.)
- * para garantir consistência na estrutura de arquivos de saída.</p>
+ * <ul>
+ *     <li>{@code /output/json} – cache local dos endpoints Qase</li>
+ *     <li>{@code /output/reports} – relatórios Excel consolidados</li>
+ *     <li>{@code /output/snapshots} – dumps intermediários</li>
+ *     <li>outros subdiretórios necessários</li>
+ * </ul>
  *
- * <h3>Exemplo de uso:</h3>
+ * <p>Esta classe é utilizada diretamente por serviços como:
+ * {@code JsonHandler}, {@code ReportGenerator}, {@code DataConsolidator},
+ * garantindo padronização e isolamento das operações de I/O.</p>
+ *
+ * <h3>Exemplo típico de uso:</h3>
  * <pre>{@code
  * Path jsonDir = FileUtils.getOutputPath("json");
  * Path reportsDir = FileUtils.getOutputPath("reports");
+ *
+ * // Limpa a pasta antes de gerar novos arquivos
  * FileUtils.clearDirectory(reportsDir);
  * }</pre>
  *
@@ -28,15 +39,21 @@ import java.nio.file.*;
  */
 public class FileUtils {
 
-    /** Caminho base padrão onde os arquivos de saída são armazenados (./output). */
+    /** Diretório padrão de saída onde todo o conteúdo gerado será armazenado. */
     private static final Path BASE_OUTPUT_DIR = Paths.get("output");
 
     /**
-     * Obtém o diretório base de saída do sistema.
+     * Retorna o diretório base de saída do sistema ({@code ./output}), criando-o
+     * se ainda não existir.
      *
-     * <p>Se o diretório não existir, ele é criado automaticamente.</p>
+     * <p>O método garante que:</p>
+     * <ul>
+     *     <li>o diretório existe no sistema de arquivos;</li>
+     *     <li>possui permissões adequadas para escrita;</li>
+     *     <li>erros de I/O são registrados no log padronizado.</li>
+     * </ul>
      *
-     * @return {@link Path} representando o diretório base de saída (padrão: <code>./output</code>)
+     * @return Instância de {@link Path} apontando para {@code ./output}.
      */
     public static Path getBaseOutputPath() {
         try {
@@ -51,13 +68,20 @@ public class FileUtils {
     }
 
     /**
-     * Obtém (ou cria, se necessário) um subdiretório dentro do diretório de saída.
+     * Obtém o caminho de um subdiretório dentro de {@code ./output}, criando-o
+     * automaticamente caso ainda não exista.
      *
-     * <p>Por exemplo, para o parâmetro <code>"json"</code>, o caminho final será:
-     * <code>./output/json</code>.</p>
+     * <p>Este método padroniza toda a estrutura de saída do sistema,
+     * garantindo previsibilidade nas operações de escrita de arquivos.</p>
      *
-     * @param subFolder Nome da subpasta dentro do diretório de saída (ex: "json", "reports")
-     * @return {@link Path} representando o caminho completo do subdiretório criado ou existente
+     * <p>Exemplos de chamadas:</p>
+     * <pre>{@code
+     * FileUtils.getOutputPath("json");     // → ./output/json
+     * FileUtils.getOutputPath("reports");  // → ./output/reports
+     * }</pre>
+     *
+     * @param subFolder Nome da subpasta a ser criada/retornada.
+     * @return {@link Path} para o subdiretório solicitado.
      */
     public static Path getOutputPath(String subFolder) {
         Path dir = BASE_OUTPUT_DIR.resolve(subFolder);
@@ -73,13 +97,21 @@ public class FileUtils {
     }
 
     /**
-     * Remove todos os arquivos contidos em um diretório específico,
-     * sem excluir o diretório em si.
+     * Remove recursivamente todos os arquivos contidos dentro do diretório informado,
+     * mantendo a estrutura da pasta.
      *
-     * <p>Este método é útil para limpar diretórios temporários ou pastas de saída
-     * antes de uma nova execução.</p>
+     * <p>Este método <strong>não remove subpastas</strong>; apenas limpa arquivos.
+     * É especialmente útil para:</p>
      *
-     * @param dir Caminho do diretório que deve ser limpo
+     * <ul>
+     *     <li>limpar pasta de relatórios antes de gerar um novo lote;</li>
+     *     <li>remover arquivos temporários de execução;</li>
+     *     <li>garantir que pastas de saída estejam vazias para CI/CD;</li>
+     * </ul>
+     *
+     * <p>Erros de deleção são registrados sem interromper o fluxo do sistema.</p>
+     *
+     * @param dir Diretório cujos arquivos devem ser apagados.
      */
     public static void clearDirectory(Path dir) {
         try (DirectoryStream<Path> stream = Files.newDirectoryStream(dir)) {

@@ -1,135 +1,243 @@
-# 🧩 WellnessQAReporter
+# 🧩 **WellnessQAReporter**
 
-**WellnessQAReporter** é uma ferramenta Java para **coleta automatizada e geração de relatórios consolidados** de projetos do [Qase.io](https://qase.io).  
-Ela foi desenvolvida para facilitar a análise de resultados de testes, defeitos, métricas e estatísticas de qualidade.
+**WellnessQAReporter** é uma plataforma Java completa para **coleta inteligente de dados do Qase.io**, **consolidação RUN-BASED** e **geração de relatórios executivos em Excel** com KPIs, histórico multi-release e dashboards analíticos.
 
----
-
-## 🚀 Funcionalidades
-
-- 🔗 Conecta-se à API Qase.io para coletar dados de:
-  - Test Cases
-  - Test Results
-  - Test Runs
-  - Defects (com enriquecimento de resultados via hash)
-  - Suites e Milestones (opcional)
-- 📊 Gera relatórios Excel (.xlsx) completos e formatados automaticamente
-- ⏱️ Requisições otimizadas com **paginação, retry e controle de timeout**
-- ⚙️ Consolidação de dados entre múltiplos endpoints
-- 🧠 Busca inteligente de *results* por **run_id** e também por **hash** referenciado em *defects*
+O foco é entregar análises profissionais, métricas de qualidade e visão completa do ciclo de testes — tudo de forma automatizada.
 
 ---
 
-## 🏗️ Estrutura do Projeto
+# 🚀 **Principais Recursos**
+
+### 🔗 **Integração Avançada com Qase.io**
+
+* Suporte a paginação, timeout, retry exponencial e controle de duplicidade.
+* Coleta completa de:
+
+  * **Cases**
+  * **Suites**
+  * **Runs**
+  * **Run Results**
+  * **Results via Hash** (referenciados dentro de Defects)
+  * **Defects**
+  * **Users**, **Milestones**, **Plans**, **Config**, **Environment** (configuráveis)
+
+### 🧠 **Consolidação RUN-BASED Inteligente**
+
+O `DataConsolidator` reconstrói a relação completa entre:
+
+```
+defect → result.hash → run_results → case → suite
+```
+
+Permitindo identificar **funcionalidade real** afetada por cada defeito.
+
+### 📊 **Geração de Relatórios Excel**
+
+* Resumo Funcional por Projeto
+* KPIs por release
+* Painel Consolidado multi-release
+* Dashboards de defeitos (tendências, distribuições, gráficos)
+* Resumo Sintético de Defeitos
+* Execução formatada com estilos globais via `ReportStyleManager`
+
+### ⏱ **Métricas e Telemetria**
+
+* Estatísticas de tempo (min/max/avg) por operação
+* Contadores automáticos
+* Exportação de métricas em JSON
+
+### 🕓 **Cálculo de Tempo Útil de Resolução**
+
+Utilizando:
+
+* Dias úteis configuráveis (workdays)
+* Horário comercial (manhã + tarde)
+* Feriados automáticos via `holidays.json`
+* Ajustes inteligentes de horários (WorkSchedule + BusinessTimeCalculator)
+
+### 📂 **Histórico Multi-Release**
+
+Grava KPIs e releases em:
+
+```
+historico/kpis/
+```
+
+Com suporte a:
+
+* KPIEngine multi-release
+* Histórico por projeto
+* KPIs agrupados por release (`withGroup()`)
+
+---
+
+# 🏗️ **Estrutura do Projeto**
 
 ```
 src/
  └── main/
      ├── java/com/sysmap/wellness/
-     │   ├── main/                 # Classe principal (WellnessQAMain)
-     │   ├── service/              # QaseClient, DataConsolidator e serviços auxiliares
-     │   ├── report/               # ReportGenerator e planilhas (FunctionalSummarySheet, etc)
-     │   └── util/                 # Utilitários (LoggerUtils, MetricsCollector)
-     └── resources/                # Configurações e templates
+     │   ├── main/                 # Entry point
+     │   ├── api/                  # QaseClient e integrações
+     │   ├── service/              # DataConsolidator, KPIEngine, KPIService
+     │   ├── report/               # ReportGenerator + planilhas
+     │   ├── history/              # Histórico de releases e KPIs
+     │   ├── utils/                # LoggerUtils, MetricsCollector, FileUtils
+     │   └── utils/datetime/       # WorkSchedule, BusinessTimeCalculator
+     └── resources/
+         ├── config.properties     # Configuração principal
+         ├── endpoints.properties  # Endpoints Qase ativos
+         ├── holidays.json         # Feriados nacionais/regionais
+         └── templates/            # Arquivos auxiliares
 ```
 
-Relatórios são salvos automaticamente em:
+Relatórios são gerados em:
+
 ```
 output/reports/
 ```
 
----
+JSONs coletados ficam em:
 
-## ⚙️ Configuração
-
-O projeto utiliza a classe `ConfigManager` para carregar as informações de configuração da API Qase.
-
-Crie um arquivo `config.properties` dentro de `src/main/resources` com o seguinte conteúdo:
-
-```properties
-# Qase API Configuration
-qase.api.token=INSIRA_AQUI_O_SEU_TOKEN
-qase.api.baseUrl=https://api.qase.io/v1
-
-# Projetos (CSV)
-qase.projects=FULLY,CHUBB
-
-# Fallback: endpoints em CSV (usado apenas se endpoints.properties não existir)
-qase.endpoints=case,suite,result,defect,milestone
+```
+output/json/
 ```
 
 ---
 
-## 🧠 Principais Classes
+# ⚙️ **Configuração**
 
-| Classe | Responsabilidade |
-|--------|------------------|
-| `QaseClient` | Comunicação com a API Qase (suporte a paginação, retries, timeout e busca por hash/run_id) |
-| `DataConsolidator` | Consolida e enriquece dados de todos os endpoints de um projeto |
-| `ReportGenerator` | Gera o relatório final em Excel (.xlsx) |
-| `FunctionalSummarySheet` | Cria a aba principal do relatório com métricas funcionais |
-| `LoggerUtils` | Utilitário de logs formatados |
-| `MetricsCollector` | Coleta métricas de execução |
+O sistema usa `ConfigManager`, que lê automaticamente:
+
+* `config.properties`
+* `endpoints.properties` (opcional)
+* `holidays.json`
+
+### 📌 Exemplo resumido de `config.properties`
+
+```properties
+# API Qase
+qase.api.token=SEU_TOKEN_AQUI
+qase.api.baseUrl=https://api.qase.io/v1
+
+# Projetos Qase (CSV)
+qase.projects=FULLY,CHUBB
+
+# Dias úteis
+workdays=1,2,3,4,5
+
+# Períodos de trabalho
+morning.start=09:00
+morning.end=11:59
+afternoon.start=13:00
+afternoon.end=18:00
+
+# Releases exibidas no Painel Consolidado
+report.kpi.maxReleases=2
+```
 
 ---
 
-## 🏃‍♂️ Execução
+# 🧠 **Principais Classes e Responsabilidades**
 
-### 💻 Via IntelliJ IDEA ou terminal
+| Classe                                    | Descrição                                                                                    |
+| ----------------------------------------- | -------------------------------------------------------------------------------------------- |
+| **QaseClient**                            | Coleta robusta da API Qase com paginação, retry, timeout, busca por hash e result por run_id |
+| **DataConsolidator**                      | Reconstrói e unifica todos os dados do projeto (RUN-BASED)                                   |
+| **KPIEngine / KPIService**                | Processa KPIs multi-release, produzindo datasets históricos                                  |
+| **ReportGenerator**                       | Gera relatório Excel com todas as abas                                                       |
+| **FunctionalSummarySheet**                | Resumo funcional (casos, execução, falhas, bugs)                                             |
+| **ExecutiveKPISheet**                     | KPIs da release atual                                                                        |
+| **ExecutiveConsolidatedSheet**            | Painel consolidado multi-release usando histórico                                            |
+| **DefectsDashboardSheet**                 | Dashboard completo com gráficos e tendências                                                 |
+| **DefectsSyntheticSheet**                 | Visão sintética tabular dos defeitos                                                         |
+| **WorkSchedule + BusinessTimeCalculator** | Cálculo avançado de tempo útil de resolução                                                  |
+| **LoggerUtils**                           | Logs enriquecidos com timers, seções e cores                                                 |
+| **MetricsCollector**                      | Telemetria, estatísticas de tempo e exportação JSON                                          |
 
-1️⃣ Compile o projeto:
+---
+
+# 🏃‍♂️ Execução
+
+### 💻 Via Maven + Java
+
+1️⃣ Compile:
+
 ```bash
 mvn clean package
 ```
 
-2️⃣ Execute o programa:
+2️⃣ Execute:
+
 ```bash
 java -jar target/WellnessQAReporter.jar
 ```
 
-3️⃣ O relatório será gerado automaticamente em:
+3️⃣ O relatório aparecerá em:
+
 ```
 output/reports/WellnessQAReport_<data>.xlsx
 ```
 
 ---
 
-## 🧩 Exemplo de Saída
+# 📘 Gerando JavaDoc
 
-A ferramenta gera um relatório com múltiplas abas no Excel, incluindo:
-- **Resumo Funcional (FunctionalSummary)**
-- **Tendência de Execução (ExecutionTrend)** *(opcional)*
-- **Defeitos e Resultados Associados**
+```bash
+mvn javadoc:javadoc
+```
+
+Saída em:
+
+```
+target/site/apidocs/index.html
+```
 
 ---
 
-## 🛠️ Desenvolvimento e Versionamento
+# 🔍 Exemplo de Saída do Excel
+
+Inclui abas como:
+
+* **Resumo Funcional**
+* **Painel Consolidado**
+* **KPI da Release Atual**
+* **Defeitos — Dashboard Executivo**
+* **Defeitos — Resumo Sintético**
+* **Apoio e tabelas auxiliares**
+* **KPIs históricos (multi-release)**
+
+---
+
+# 🛠️ Desenvolvimento
 
 ### Requisitos
-- **Java 11+**
-- **Maven 3.8+**
-- Git (para controle de versão)
 
-### Fluxo de Git
+* Java **11+**
+* Maven **3.8+**
+* Git
+
+### Commits
+
 ```bash
-git pull origin main
-# Faz alterações...
 git add .
-git commit -m "Implementa nova funcionalidade"
+git commit -m "Implementa novo KPI multi-release"
 git push origin main
 ```
 
 ---
 
-## 🧾 Licença
+# 🛡️ Licença
 
-Este projeto é de uso interno e está sob a licença proprietária da Sysmap Solutions.  
-Distribuição externa não autorizada é proibida.
+Projeto de uso interno — propriedade Sysmap Solutions.
+Distribuição externa não autorizada.
 
 ---
 
-## 👨‍💻 Autor
+# 👨‍💻 Autor
 
-**Roberto Boker**  
-Desenvolvimento de QA Automation & Reporting  
-Sysmap Solutions — 2025
+**Roberto Boker**
+QA Automation & Reporting – Sysmap Solutions (2025)
+
+---
+

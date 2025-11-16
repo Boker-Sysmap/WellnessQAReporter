@@ -9,40 +9,42 @@ import java.util.Map;
 
 /**
  * Serviço responsável por gerar o relatório <b>"Resumo por Funcionalidade"</b>,
- * que consolida informações de casos de teste, execuções e defeitos
- * agrupadas por funcionalidade (suite).
+ * consolidando informações de casos de teste, execuções e defeitos agrupadas
+ * por suíte (funcionalidade).
  *
- * <p>Este serviço atua sobre os dados já consolidados pelo
- * {@link com.sysmap.wellness.service.DataConsolidator}, aplicando regras de
- * negócio específicas para o nível de resumo.</p>
+ * <p>Este serviço opera sobre os dados já unificados pelo DataConsolidator,
+ * aplicando lógica de agregação e cálculo de métricas essenciais para fornecer
+ * uma visão executiva e operacional sobre a qualidade do produto, organizada
+ * por funcionalidades.</p>
  *
- * <h2>Funções principais:</h2>
+ * <h2>Resumo das responsabilidades</h2>
  * <ul>
- *   <li>Agrupar casos, execuções e defeitos por suíte (funcionalidade);</li>
- *   <li>Contabilizar métricas de execução, sucesso e falha;</li>
- *   <li>Calcular percentuais de execução e incidência de defeitos;</li>
- *   <li>Gerar um {@link JSONObject} final contendo o resumo estruturado.</li>
+ *   <li>Agrupar Test Cases, Test Results e Defects por suite (funcionalidade);</li>
+ *   <li>Calcular métricas fundamentais como: casos totais, executados,
+ *       passed, failed, aborted e não executados;</li>
+ *   <li>Relacionar Defects às funcionalidades através dos casos de teste;</li>
+ *   <li>Calcular percentuais de execução e incidência de bugs por funcionalidade;</li>
+ *   <li>Gerar um JSONArray estruturado para consumo pelo ReportGenerator;</li>
  * </ul>
  *
- * <p>Os resultados gerados são posteriormente consumidos pelo módulo de
- * geração de relatórios em Excel ({@link com.sysmap.wellness.report.ReportGenerator}).</p>
- *
- * @author Roberto
- * @version 1.1
- * @since 1.0
+ * <p>Este serviço não realiza cálculos complexos ou análises temporais; ele
+ * atua exclusivamente no nível de agregação de dados por funcionalidade.</p>
  */
 public class FunctionalSummaryService {
 
     /**
-     * Prepara os dados de resumo funcional para todos os projetos do conjunto consolidado.
+     * Prepara o resumo funcional para todos os projetos incluídos no consolidated.
      *
-     * <p>Para cada projeto, este método identifica as suítes de teste e consolida
-     * as métricas principais (casos, resultados e defeitos), retornando um
-     * {@link JSONObject} com uma lista de funcionalidades e suas estatísticas.</p>
+     * <p>Fluxo para cada projeto:</p>
+     * <ol>
+     *   <li>Extrair arrays seguros de cases, results, defects e suites;</li>
+     *   <li>Gerar o resumo por funcionalidade com {@link #generateFunctionalSummary};</li>
+     *   <li>Embalá-lo como JSONObject contendo o array "functionalities";</li>
+     *   <li>Retornar um mapa projectKey → summary.</li>
+     * </ol>
      *
-     * @param consolidatedData Mapa contendo os dados consolidados por projeto.
-     *                         Exemplo de estrutura: <code>projectKey → {"cases":[...],"results":[...],"defects":[...]}</code>
-     * @return Mapa de projetos → {@link JSONObject} contendo o resumo de funcionalidades.
+     * @param consolidatedData Mapa contendo consolidated.json por projeto.
+     * @return Map projectKey → JSONObject com estatísticas por funcionalidade.
      */
     public Map<String, JSONObject> prepareData(Map<String, JSONObject> consolidatedData) {
         Map<String, JSONObject> summaries = new HashMap<>();
@@ -51,12 +53,15 @@ public class FunctionalSummaryService {
             String projectKey = entry.getKey();
             JSONObject projectData = entry.getValue();
 
+            // Arrays tolerantes a nomes alternativos
             JSONArray cases = safeArray(projectData, "case", "cases");
             JSONArray results = safeArray(projectData, "result", "results");
             JSONArray defects = safeArray(projectData, "defect", "defects");
             JSONArray suites = safeArray(projectData, "suite", "suites");
 
-            JSONArray functionalities = generateFunctionalSummary(projectKey, cases, results, defects, suites);
+            // Geração do resumo funcional
+            JSONArray functionalities = generateFunctionalSummary(
+                projectKey, cases, results, defects, suites);
 
             JSONObject summary = new JSONObject();
             summary.put("functionalities", functionalities);
@@ -69,29 +74,48 @@ public class FunctionalSummaryService {
     }
 
     /**
-     * Gera o resumo funcional consolidado de um único projeto.
+     * Gera o resumo consolidado de funcionalidades para um projeto.
      *
-     * <p>Este método percorre os arrays de casos, resultados e defeitos, agrupando-os
-     * por suíte. Também calcula percentuais de execução e incidência de bugs.</p>
+     * <p>Este método executa cinco etapas principais:</p>
      *
-     * @param projectKey Identificador do projeto.
-     * @param cases      Lista de casos de teste.
-     * @param results    Lista de resultados de execução.
-     * @param defects    Lista de defeitos associados.
-     * @param suites     Lista de suítes (funcionalidades).
-     * @return {@link JSONArray} contendo o resumo por funcionalidade.
+     * <ol>
+     *   <li><b>Inicialização:</b> cria uma linha-base para cada suite conhecida.</li>
+     *   <li><b>Contagem de casos:</b> associa cases às suites e contabiliza totalCases.</li>
+     *   <li><b>Contagem de execuções:</b> agrupa resultados e incrementa métricas
+     *   como passed, failed, executed, aborted e notExecuted.</li>
+     *   <li><b>Contagem de defects:</b> relaciona bugs às suites via case_id
+     *   e categoriza por status (open, closed, ignored).</li>
+     *   <li><b>Cálculo de percentuais:</b> executados/total e bugs/executados.</li>
+     * </ol>
+     *
+     * @param projectKey Identificador do projeto no consolidated.
+     * @param cases      Array de casos de teste.
+     * @param results    Array de resultados de execução.
+     * @param defects    Array de defeitos associados.
+     * @param suites     Array de suítes de funcionalidades.
+     * @return JSONArray estruturado contendo uma linha por funcionalidade.
      */
-    private JSONArray generateFunctionalSummary(String projectKey, JSONArray cases, JSONArray results, JSONArray defects, JSONArray suites) {
+    private JSONArray generateFunctionalSummary(
+        String projectKey,
+        JSONArray cases,
+        JSONArray results,
+        JSONArray defects,
+        JSONArray suites
+    ) {
         Map<String, JSONObject> summaryMap = new HashMap<>();
 
-        // === Inicializa linhas base por suite ===
+        // ============================================================
+        // 1) Inicializa linhas base por suite
+        // ============================================================
         for (int i = 0; i < suites.length(); i++) {
             JSONObject suite = suites.getJSONObject(i);
             String suiteName = suite.optString("title", "Sem Nome");
             summaryMap.put(suiteName, baseRow(suiteName));
         }
 
-        // === Contabiliza casos de teste ===
+        // ============================================================
+        // 2) Contabiliza casos de teste
+        // ============================================================
         for (int i = 0; i < cases.length(); i++) {
             JSONObject c = cases.getJSONObject(i);
             String suiteName = findSuiteName(c.optInt("suite_id"), suites);
@@ -101,7 +125,9 @@ public class FunctionalSummaryService {
             summaryMap.put(suiteName, s);
         }
 
-        // === Contabiliza resultados de execução ===
+        // ============================================================
+        // 3) Contabiliza resultados de execução
+        // ============================================================
         for (int i = 0; i < results.length(); i++) {
             JSONObject r = results.getJSONObject(i);
             String status = r.optString("status", "untested");
@@ -137,7 +163,9 @@ public class FunctionalSummaryService {
             summaryMap.put(suiteName, s);
         }
 
-        // === Contabiliza defeitos ===
+        // ============================================================
+        // 4) Contabiliza defects por suite
+        // ============================================================
         for (int i = 0; i < defects.length(); i++) {
             JSONObject d = defects.getJSONObject(i);
             String status = d.optString("status", "undefined");
@@ -163,7 +191,9 @@ public class FunctionalSummaryService {
             summaryMap.put(suiteName, s);
         }
 
-        // === Calcula percentuais ===
+        // ============================================================
+        // 5) Calcula percentuais e produz array final
+        // ============================================================
         JSONArray rows = new JSONArray();
         for (JSONObject s : summaryMap.values()) {
             int totalCases = s.getInt("totalCases");
@@ -183,10 +213,11 @@ public class FunctionalSummaryService {
     }
 
     /**
-     * Cria uma linha base do resumo com todos os campos numéricos inicializados.
+     * Cria uma linha-base do resumo funcional, inicializando todos os campos
+     * numéricos com zero e definindo o nome da suíte.
      *
-     * @param suiteName Nome da suíte (funcionalidade).
-     * @return {@link JSONObject} com a estrutura base da linha de resumo.
+     * @param suiteName Nome da funcionalidade.
+     * @return JSONObject contendo os campos padrão.
      */
     private JSONObject baseRow(String suiteName) {
         JSONObject o = new JSONObject();
@@ -207,11 +238,11 @@ public class FunctionalSummaryService {
     }
 
     /**
-     * Localiza o nome da suíte de testes com base no ID.
+     * Localiza o nome da suíte com base em seu identificador.
      *
-     * @param suiteId ID da suíte procurada.
-     * @param suites  Lista de suítes.
-     * @return Nome da suíte, ou "Sem Nome" se não encontrada.
+     * @param suiteId ID da suite.
+     * @param suites  Lista de suites presentes no consolidated.
+     * @return Nome da suite ou "Sem Nome" caso não exista.
      */
     private String findSuiteName(int suiteId, JSONArray suites) {
         for (int i = 0; i < suites.length(); i++) {
@@ -224,11 +255,11 @@ public class FunctionalSummaryService {
     }
 
     /**
-     * Busca um caso de teste pelo seu ID.
+     * Busca e retorna o caso de teste associado ao ID fornecido.
      *
-     * @param cases Lista de casos de teste.
+     * @param cases Array de casos.
      * @param id    Identificador do caso.
-     * @return {@link JSONObject} do caso encontrado ou objeto vazio se não houver correspondência.
+     * @return JSONObject do caso ou objeto vazio como fallback.
      */
     private JSONObject findCaseById(JSONArray cases, int id) {
         for (int i = 0; i < cases.length(); i++) {
@@ -241,12 +272,11 @@ public class FunctionalSummaryService {
     }
 
     /**
-     * Retorna um {@link JSONArray} seguro a partir de um {@link JSONObject},
-     * mesmo que o campo seja nulo ou contenha apenas um objeto singular.
+     * Extrai um JSONArray de forma tolerante, aceitando tanto arrays quanto objetos.
      *
-     * @param source Objeto JSON de origem.
-     * @param keys   Lista de possíveis chaves válidas (ordem de prioridade).
-     * @return {@link JSONArray} correspondente ou vazio se nenhuma chave existir.
+     * @param source JSON original.
+     * @param keys   Chaves que podem conter o array.
+     * @return JSONArray correspondente ou vazio se nenhuma chave válida existir.
      */
     private JSONArray safeArray(JSONObject source, String... keys) {
         for (String key : keys) {
