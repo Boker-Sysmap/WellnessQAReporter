@@ -29,7 +29,7 @@ import java.util.*;
  *  ✔ Painel Consolidado com múltiplas releases
  *  ✔ KPIs vindos da engine de KPIs + histórico
  *  ✔ Releases reais por projeto
- *  ✔ Snapshots RUN-BASED
+ *  ✔ Snapshots RUN-BASED por release
  *  ✔ Estrutura limpa e compatível com extensões futuras
  */
 public class ReportGenerator {
@@ -71,7 +71,7 @@ public class ReportGenerator {
 
             LoggerUtils.success("✔ KPIs calculados com histórico gravado");
 
-            // release real por projeto:
+            // release "principal" por projeto (usada apenas nas abas executivas)
             Map<String, String> releaseByProject =
                 buildReleaseByProjectMap(kpisByProject, fileBasedReleaseId);
 
@@ -174,14 +174,14 @@ public class ReportGenerator {
                 saveWorkbook(wb, finalPath);
 
                 // -----------------------------------------------------
-                // 6) Histórico RUN-BASED
+                // 6) Histórico RUN-BASED (agora multi-release)
                 // -----------------------------------------------------
                 generateRunBasedHistory(
                     consolidatedData,
                     enrichedDefects,
                     functionalSummaries,
                     finalPath,
-                    releaseByProject
+                    kpisByProject
                 );
             }
 
@@ -256,7 +256,7 @@ public class ReportGenerator {
     }
 
     // =====================================================================================
-    // 🧠 Release por projeto (usado pelas abas executivas)
+    // 🧠 Release "principal" por projeto (usado pelas abas executivas)
     // =====================================================================================
     private Map<String, String> buildReleaseByProjectMap(
         Map<String, List<KPIData>> kpisByProject,
@@ -280,48 +280,104 @@ public class ReportGenerator {
     }
 
     // =====================================================================================
-    // 🗂 Histórico RUN-BASED
+    // 🗂 Histórico RUN-BASED (agora por release)
     // =====================================================================================
     private void generateRunBasedHistory(
         Map<String, JSONObject> consolidated,
         Map<String, JSONArray> defects,
         Map<String, JSONObject> functional,
         Path finalPath,
-        Map<String, String> releaseByProject
+        Map<String, List<KPIData>> kpisByProject
     ) {
-        LoggerUtils.section("📚 Salvando histórico RUN-BASED");
+        LoggerUtils.section("📚 Salvando histórico RUN-BASED (multi-release)");
 
         LocalDateTime now = LocalDateTime.now();
         String year = String.valueOf(now.getYear());
 
         for (String project : consolidated.keySet()) {
 
-            String releaseId = releaseByProject.get(project);
+            List<KPIData> projectKpis = kpisByProject.get(project);
+            if (projectKpis == null || projectKpis.isEmpty()) {
+                LoggerUtils.warn("⚠ Nenhum KPI encontrado para " + project + " ao salvar histórico.");
+                continue;
+            }
 
-            Path relDir =
-                Paths.get("historico", "releases", normalize(project), year, releaseId);
+            // releases distintas presentes nos KPIs
+            Set<String> releases = new TreeSet<>(Comparator.reverseOrder());
+            for (KPIData k : projectKpis) {
+                String g = k.getGroup();
+                if (g != null && !g.isEmpty()) {
+                    releases.add(g);
+                }
+            }
 
-            Path snapDir =
-                Paths.get("historico", "snapshots", normalize(project), year, releaseId);
+            if (releases.isEmpty()) {
+                LoggerUtils.warn("⚠ Nenhuma release em KPIs para " + project + " ao salvar histórico.");
+                continue;
+            }
 
-            try {
-                Files.createDirectories(relDir);
-                Files.createDirectories(snapDir);
+            for (String releaseId : releases) {
 
-                JSONObject info = new JSONObject();
-                info.put("project", project);
-                info.put("releaseId", releaseId);
-                info.put("year", year);
-                info.put("generatedAt", now.toString());
-                info.put("reportFile", finalPath.getFileName().toString());
+                Path relDir =
+                    Paths.get("historico", "releases", normalize(project), year, releaseId);
 
-                writeJson(consolidated.get(project), snapDir.resolve("consolidated.json"));
-                writeJson(info, relDir.resolve("release_snapshot.json"));
+                Path snapDir =
+                    Paths.get("historico", "snapshots", normalize(project), year, releaseId);
 
-            } catch (Exception e) {
-                LoggerUtils.error("⚠ Falha ao salvar histórico para " + project, e);
+                try {
+                    Files.createDirectories(relDir);
+                    Files.createDirectories(snapDir);
+
+                    JSONObject info = new JSONObject();
+                    info.put("project", project);
+                    info.put("releaseId", releaseId);
+                    info.put("year", year);
+                    info.put("generatedAt", now.toString());
+                    info.put("reportFile", finalPath.getFileName().toString());
+
+                    // consolidated filtrado por release
+                    JSONObject fullConsolidated = consolidated.get(project);
+                    JSONObject filteredConsolidated =
+                        filterConsolidatedByRelease(fullConsolidated, releaseId);
+
+                    writeJson(filteredConsolidated, snapDir.resolve("consolidated.json"));
+                    writeJson(info, relDir.resolve("release_snapshot.json"));
+
+                } catch (Exception e) {
+                    LoggerUtils.error("⚠ Falha ao salvar histórico para " + project +
+                        " / release " + releaseId, e);
+                }
             }
         }
+    }
+
+    /**
+     * Cria uma cópia do consolidated contendo apenas os Test Plans relacionados à release.
+     * (mesma regra usada na KPIEngine: titulo do plano contém o releaseId)
+     */
+    private JSONObject filterConsolidatedByRelease(JSONObject full, String releaseId) {
+
+        if (full == null) return null;
+
+        JSONObject filtered = new JSONObject(full.toString()); // deep clone
+
+        JSONArray originalPlans = full.optJSONArray("plan");
+        JSONArray filteredPlans = new JSONArray();
+
+        if (originalPlans != null) {
+            for (int i = 0; i < originalPlans.length(); i++) {
+                JSONObject p = originalPlans.optJSONObject(i);
+                if (p == null) continue;
+
+                String title = p.optString("title", "");
+                if (title.contains(releaseId)) {
+                    filteredPlans.put(p);
+                }
+            }
+        }
+
+        filtered.put("plan", filteredPlans);
+        return filtered;
     }
 
     private void writeJson(JSONObject json, Path path) {

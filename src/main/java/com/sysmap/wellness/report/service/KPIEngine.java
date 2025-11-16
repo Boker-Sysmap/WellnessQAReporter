@@ -1,6 +1,5 @@
 package com.sysmap.wellness.report.service;
 
-import com.sysmap.wellness.report.service.kpi.ScopeKPIService;
 import com.sysmap.wellness.report.service.model.KPIData;
 import com.sysmap.wellness.utils.LoggerUtils;
 import org.json.JSONArray;
@@ -12,114 +11,124 @@ import java.util.regex.Pattern;
 
 public class KPIEngine {
 
-    private final KPIHistoryService historyService = new KPIHistoryService();
-    private final ScopeKPIService scopeService = new ScopeKPIService();
-
-    // Regex: PROJ-AAAA-MM-RNN + qualquer coisa depois
     private static final Pattern RELEASE_PATTERN =
-        Pattern.compile("^([A-Z0-9_]+)-(\\d{4})-(\\d{2})-(R\\d{2}).*");
+        Pattern.compile("([A-Z]+-[0-9]{4}-[0-9]{2}-R[0-9]{2})");
 
+    private final KPIHistoryService historyService = new KPIHistoryService();
+    private final KPIService kpiService = new KPIService();
+
+    /**
+     * Calcula KPIs para TODOS os projetos e TODAS as releases encontradas.
+     */
     public Map<String, List<KPIData>> calculateForAllProjects(
         Map<String, JSONObject> consolidatedData,
-        String fallbackReleaseId
-    ) {
-        Map<String, List<KPIData>> result = new LinkedHashMap<>();
+        String fallbackRelease) {
 
-        LoggerUtils.section("📊 KPIEngine: calculando KPIs para todos os projetos");
+        Map<String, List<KPIData>> result = new LinkedHashMap<>();
 
         for (String project : consolidatedData.keySet()) {
 
-            LoggerUtils.step("📊 KPIEngine: calculando KPIs para o projeto " + project);
+            JSONObject consolidated = consolidatedData.get(project);
 
-            JSONObject data = consolidatedData.get(project);
+            List<String> releases = detectAllReleaseIds(consolidated, project, fallbackRelease);
 
-            String releaseId = detectReleaseId(data, project, fallbackReleaseId);
+            LoggerUtils.info("→ Releases detectadas para " + project + ": " + releases);
 
-            LoggerUtils.info("🔎 Release selecionada automaticamente: " + releaseId);
+            List<KPIData> allKPIs = new ArrayList<>();
 
-            List<KPIData> kpis = calculateKPIsForProject(data, project, releaseId);
+            for (String release : releases) {
 
-            result.put(project, kpis);
+                LoggerUtils.info("⚙ Calculando KPIs da release " + release);
 
-            // Gravar histórico da release correspondente
-            historyService.saveAll(project, releaseId, kpis);
+                // Filtra o consolidated para a release atual
+                JSONObject filtered = filterConsolidatedByRelease(consolidated, release);
+
+                // KPIs calculados pelo serviço original
+                List<KPIData> baseKPIs = kpiService.calculateKPIs(filtered, project);
+
+                // Converte todos para KPIs "amarrados" à release
+                List<KPIData> releaseKPIs = new ArrayList<>();
+
+                for (KPIData k : baseKPIs) {
+                    releaseKPIs.add(k.withGroup(release));
+                }
+
+                // Salva o histórico da release
+                historyService.saveAll(project, release, releaseKPIs);
+
+                allKPIs.addAll(releaseKPIs);
+            }
+
+            result.put(project, allKPIs);
         }
 
         return result;
     }
 
-    private List<KPIData> calculateKPIsForProject(JSONObject consolidated,
-                                                  String project,
-                                                  String releaseId) {
-
-        List<KPIData> kpis = new ArrayList<>();
-
-        // Aqui adicionamos os KPIs que vão entrando
-        kpis.add(scopeService.calculate(consolidated, project, releaseId));
-
-        return kpis;
-    }
-
     /**
-     * Detecta a release mais recente com base nos Test Plans.
-     * Se não encontrar nada válido, usa o fallback.
+     * Filtra o JSON consolidated para conter apenas planos da release.
      */
-    private String detectReleaseId(JSONObject consolidated,
-                                   String project,
-                                   String fallback) {
+    private JSONObject filterConsolidatedByRelease(JSONObject full, String releaseId) {
 
-        JSONArray arr = consolidated.optJSONArray("plan");
-        if (arr == null || arr.isEmpty()) return fallback;
+        JSONObject filtered = new JSONObject(full.toString()); // deep clone seguro
 
-        List<String> releases = new ArrayList<>();
+        JSONArray originalPlans = full.optJSONArray("plan");
+        JSONArray filteredPlans = new JSONArray();
 
-        for (int i = 0; i < arr.length(); i++) {
-            JSONObject plan = arr.optJSONObject(i);
-            if (plan == null) continue;
+        if (originalPlans != null) {
+            for (int i = 0; i < originalPlans.length(); i++) {
+                JSONObject p = originalPlans.optJSONObject(i);
+                if (p == null) continue;
 
-            String title = plan.optString("title", null);
-            String rid = extractReleaseId(title);
-            if (rid != null) {
-                releases.add(rid);
+                String title = p.optString("title", "");
+                if (title.contains(releaseId)) {
+                    filteredPlans.put(p);
+                }
             }
         }
 
-        if (releases.isEmpty()) {
-            LoggerUtils.warn("⚠ Nenhuma release válida encontrada em 'plan' para " + project);
-            return fallback;
-        }
-
-        // Mais recente primeiro (lexicográfico funciona pelo padrão AAAA-MM-RNN)
-        releases.sort(Comparator.reverseOrder());
-
-        LoggerUtils.info("🔎 Releases detectadas para " + project + ": " + releases);
-
-        return releases.get(0);
+        filtered.put("plan", filteredPlans);
+        return filtered;
     }
 
     /**
-     * Extrai releaseId a partir do título do Test Plan.
-     * Remove espaços, normaliza hífen e ignora qualquer sufixo.
+     * Detecta TODAS as releases presentes nos títulos dos Test Plans.
+     */
+    private List<String> detectAllReleaseIds(JSONObject consolidated,
+                                             String project,
+                                             String fallback) {
+
+        JSONArray plans = consolidated.optJSONArray("plan");
+        if (plans == null || plans.isEmpty()) {
+            return Collections.singletonList(fallback);
+        }
+
+        Set<String> releases = new TreeSet<>(Comparator.reverseOrder());
+
+        for (int i = 0; i < plans.length(); i++) {
+            JSONObject plan = plans.optJSONObject(i);
+            if (plan == null) continue;
+
+            String title = plan.optString("title", null);
+            String releaseId = extractReleaseId(title);
+
+            if (releaseId != null) releases.add(releaseId);
+        }
+
+        if (releases.isEmpty()) releases.add(fallback);
+
+        return new ArrayList<>(releases);
+    }
+
+    /**
+     * Extrai o formato FULLYREPO-2025-02-R01 do título.
      */
     private String extractReleaseId(String title) {
         if (title == null) return null;
 
-        String clean = title
-            .replace("–", "-")
-            .replace(" ", "")
-            .trim()
-            .toUpperCase();
+        Matcher matcher = RELEASE_PATTERN.matcher(title);
+        if (matcher.find()) return matcher.group(1);
 
-        Matcher m = RELEASE_PATTERN.matcher(clean);
-        if (!m.matches()) {
-            return null;
-        }
-
-        String proj = m.group(1);
-        String ano  = m.group(2);
-        String mes  = m.group(3);
-        String rnn  = m.group(4);
-
-        return proj + "-" + ano + "-" + mes + "-" + rnn;
+        return null;
     }
 }

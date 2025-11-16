@@ -13,7 +13,7 @@ public class KPIData {
     private final String description;
     private final boolean percent;
     private final String project;
-    private final String group;
+    private final String group;               // <- Release / Grupo
     private final LocalDateTime calculatedAt;
 
     // CONSTRUTOR COMPLETO
@@ -41,7 +41,7 @@ public class KPIData {
             .replace("-", "_")
             .replaceAll("[^a-z0-9_]", "");
 
-        String formatted = String.format("%.0f", value);   // sem decimais
+        String formatted = String.format("%.0f", value);
 
         return new KPIData(
             key,
@@ -56,6 +56,22 @@ public class KPIData {
         );
     }
 
+    // ==== NOVO MÉTODO: suporte nativo a múltiplas releases ====
+    public KPIData withGroup(String newGroup) {
+        return new KPIData(
+            this.key,
+            this.name,
+            this.value,
+            this.formattedValue,
+            this.trendSymbol,
+            this.description,
+            this.percent,
+            this.project,
+            newGroup
+        );
+    }
+
+    // GETTERS
     public String getKey() { return key; }
     public String getName() { return name; }
     public double getValue() { return value; }
