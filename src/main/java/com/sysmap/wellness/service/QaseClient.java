@@ -1,6 +1,7 @@
 package com.sysmap.wellness.service;
 
 import com.sysmap.wellness.config.ConfigManager;
+import com.sysmap.wellness.service.consolidator.DataConsolidator;
 import com.sysmap.wellness.utils.LoggerUtils;
 import com.sysmap.wellness.utils.MetricsCollector;
 import org.json.JSONArray;
@@ -60,7 +61,7 @@ import java.util.*;
  * Os métodos públicos desta classe são os pontos de entrada principais para o
  * pipeline de coleta de dados que será posteriormente consumido pelo
  * {@link com.sysmap.wellness.service.JsonHandler} e pelo
- * {@link com.sysmap.wellness.service.DataConsolidator}.
+ * {@link DataConsolidator}.
  * </p>
  */
 public class QaseClient {

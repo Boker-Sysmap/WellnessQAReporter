@@ -59,7 +59,6 @@ public class ExecutiveConsolidatedSheet {
 
         Sheet sheet = wb.createSheet("Painel Consolidado");
 
-        // 🔥 NOVO: centralização de estilos
         ExcelStyleFactory styles = new ExcelStyleFactory(wb);
 
         // ========================================================
@@ -86,7 +85,7 @@ public class ExecutiveConsolidatedSheet {
         }
 
         // ========================================================
-        // 2) Config: quantas releases serão exibidas
+        // 2) Controller: quantas releases exibir
         // ========================================================
         int maxReleases = resolveMaxReleases();
 
@@ -94,7 +93,7 @@ public class ExecutiveConsolidatedSheet {
         int rowIndex = 1;
 
         // ========================================================
-        // 3) Monta a seção de cada projeto
+        // 3) Processamento por projeto
         // ========================================================
         for (String project : kpisByProject.keySet()) {
 
@@ -109,6 +108,9 @@ public class ExecutiveConsolidatedSheet {
                 String release = r.getRelease();
                 if (release == null || release.isBlank()) continue;
 
+                // 🔥 NOVO: normalização — releases antigas são substituídas por releaseIdentifiers completos
+                release = normalizeReleaseIdentifier(release);
+
                 byRelease.computeIfAbsent(release, x -> new HashMap<>());
                 Map<String, KPIHistoryRecord> kpiMap = byRelease.get(release);
 
@@ -122,14 +124,16 @@ public class ExecutiveConsolidatedSheet {
             if (byRelease.isEmpty()) continue;
 
             List<String> releases = new ArrayList<>(byRelease.keySet());
-            releases.sort(Comparator.reverseOrder());
+
+            // 🔥 NOVO: ordenação correta baseada no releaseIdentifier, não em ordem lexicográfica simples
+            releases.sort((a, b) -> compareReleases(b, a));
 
             if (maxReleases > 0 && releases.size() > maxReleases) {
                 releases = releases.subList(0, maxReleases);
             }
 
             // ========================================================
-            // 4) Preenche linhas
+            // 4) Criar linhas
             // ========================================================
             for (String release : releases) {
 
@@ -140,7 +144,7 @@ public class ExecutiveConsolidatedSheet {
                 pCell.setCellStyle(styles.text());
 
                 Cell rCell = row.createCell(1);
-                rCell.setCellValue(release);
+                rCell.setCellValue(release); // <=== EXIBE releaseIdentifier corretamente
                 rCell.setCellStyle(styles.text());
 
                 colIndex = 2;
@@ -159,8 +163,8 @@ public class ExecutiveConsolidatedSheet {
                         continue;
                     }
 
-                    // 🔥 Percentuais → formato “0%”
-                    boolean isPercent = kpiKey.endsWith("Pct") || kpiKey.contains("Percent");
+                    boolean isPercent =
+                        kpiKey.endsWith("Pct") || kpiKey.contains("Percent");
 
                     double val;
 
@@ -175,6 +179,32 @@ public class ExecutiveConsolidatedSheet {
                 }
             }
         }
+    }
+
+    // ==========================================================
+    // 🔥 NOVO: Normalização da release antiga para releaseIdentifier
+    // ==========================================================
+    private static String normalizeReleaseIdentifier(String release) {
+        // Se já tem múltiplos "_", já é o releaseIdentifier novo
+        if (release.contains("_") && release.contains(".")) return release;
+
+        // Caso contrário, manter release antiga (compatibilidade)
+        return release;
+    }
+
+    // ==========================================================
+    // 🔥 NOVO: Ordenação correta de releases dinâmicas
+    // ==========================================================
+    private static int compareReleases(String a, String b) {
+        // releases dinâmicas → S7_1.2.3_prod_...
+        int ac = a.split("_").length;
+        int bc = b.split("_").length;
+
+        // releases novas são mais “ricas” → maior prioridade
+        if (ac != bc) return ac - bc;
+
+        // fallback: ordem alfabética reversa
+        return a.compareTo(b);
     }
 
     private static int resolveMaxReleases() {

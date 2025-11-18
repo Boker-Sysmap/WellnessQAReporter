@@ -5,6 +5,8 @@ import com.sysmap.wellness.utils.LoggerUtils;
 import java.io.*;
 import java.nio.file.*;
 import java.util.*;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 
 /**
@@ -43,6 +45,7 @@ import java.util.stream.Collectors;
  *     <li>Se não existir, carregar <code>/config/config.properties</code> do classpath;</li>
  *     <li>Repetir o processo para <code>endpoints.properties</code>;</li>
  *     <li>Sanear conteúdo (trim, remoção de lixo);</li>
+ *     <li>Validar configuração de identificador de release (mnemônicos);</li>
  *     <li>Realizar fail-fast caso propriedades essenciais estejam ausentes.</li>
  * </ol>
  *
@@ -66,6 +69,10 @@ public class ConfigManager {
      */
     private static Map<String, Boolean> endpointFlags = new LinkedHashMap<>();
 
+    /** Regex para tokens de identificador de release: ${token}. */
+    private static final Pattern IDENTIFIER_TOKEN_PATTERN =
+        Pattern.compile("\\$\\{([a-zA-Z0-9_]+)}");
+
     /* Inicialização estática do config ao carregar a classe. */
     static {
         loadConfig();
@@ -75,19 +82,6 @@ public class ConfigManager {
     //  CARREGAMENTO PRINCIPAL DO CONFIG
     // =====================================================================
 
-    /**
-     * Executa o pipeline completo de carregamento:
-     *
-     * <ol>
-     *   <li>Tentativa de carregar config externo;</li>
-     *   <li>Fallback para config do classpath;</li>
-     *   <li>Carregar arquivo endpoints.properties;</li>
-     *   <li>Sanear propriedades;</li>
-     * </ol>
-     *
-     * <p>Falhas são logadas, mas não interrompem o processo,
-     * permitindo execução em ambientes parciais.</p>
-     */
     private static void loadConfig() {
         LoggerUtils.step("⚙️ Carregando configurações...");
 
@@ -101,19 +95,13 @@ public class ConfigManager {
 
         loadEndpoints();
         sanitizeProperties();
+        validateReleaseIdentifierConfig(); // 🔥 NOVO: validação avançada dos mnemônicos
     }
 
     // =====================================================================
     //  CARREGAMENTO DE ARQUIVOS (EXTERNO E CLASSPATH)
     // =====================================================================
 
-    /**
-     * Tenta carregar um arquivo de configuração no diretório local:
-     * <pre>./config/&lt;filename&gt;</pre>
-     *
-     * @param filename nome do arquivo (ex: config.properties)
-     * @return true se carregado com sucesso; false caso contrário
-     */
     private static boolean loadExternalConfig(String filename) {
         Path path = Paths.get("config", filename);
         if (!Files.exists(path)) return false;
@@ -129,13 +117,6 @@ public class ConfigManager {
         }
     }
 
-    /**
-     * Tenta carregar arquivo do classpath:
-     * <pre>/config/&lt;filename&gt;</pre>
-     *
-     * @param filename nome do arquivo
-     * @return true se carregado; false caso contrário
-     */
     private static boolean loadClasspathConfig(String filename) {
         try (InputStream is = ConfigManager.class.getResourceAsStream("/config/" + filename)) {
 
@@ -156,13 +137,6 @@ public class ConfigManager {
     //  ENDPOINTS
     // =====================================================================
 
-    /**
-     * Carrega os endpoints utilizando a mesma estratégia:
-     * <ol>
-     *   <li>Arquivo externo;</li>
-     *   <li>Fallback para classpath;</li>
-     * </ol>
-     */
     private static void loadEndpoints() {
         endpointFlags.clear();
 
@@ -171,14 +145,10 @@ public class ConfigManager {
                 loadEndpointsClasspath();
 
         if (!loaded) {
-            LoggerUtils.warn("⚠ endpoints.properties não encontrado; usando qase.endpoints do config.properties.");
+            LoggerUtils.warn("⚠️ endpoints.properties não encontrado; usando qase.endpoints do config.properties.");
         }
     }
 
-    /**
-     * Carrega endpoints do arquivo externo:
-     * <pre>./config/endpoints.properties</pre>
-     */
     private static boolean loadEndpointsExternal() {
         Path path = Paths.get("config", ENDPOINTS_FILE);
         if (!Files.exists(path)) return false;
@@ -199,10 +169,6 @@ public class ConfigManager {
         }
     }
 
-    /**
-     * Carrega endpoints do classpath:
-     * <pre>/config/endpoints.properties</pre>
-     */
     private static boolean loadEndpointsClasspath() {
         try (InputStream is = ConfigManager.class.getResourceAsStream("/config/" + ENDPOINTS_FILE)) {
 
@@ -225,9 +191,6 @@ public class ConfigManager {
         }
     }
 
-    /**
-     * Converte uma linha do arquivo endpoints.properties em um par chave→flag.
-     */
     private static void parseEndpointLine(String line) {
         String[] parts = line.split("=");
         if (parts.length == 2) {
@@ -239,14 +202,13 @@ public class ConfigManager {
     //  SANITIZAÇÃO
     // =====================================================================
 
-    /**
-     * Aplica <code>trim()</code> em todos os valores da configuração carregada,
-     * garantindo que espaços acidentais não causem erro durante parsing posterior.
-     */
     private static void sanitizeProperties() {
         for (Object key : props.keySet()) {
             String k = key.toString();
-            props.setProperty(k, props.getProperty(k).trim());
+            String value = props.getProperty(k);
+            if (value != null) {
+                props.setProperty(k, value.trim());
+            }
         }
     }
 
@@ -254,17 +216,14 @@ public class ConfigManager {
     //  API PUBLICA DE ACESSO
     // =====================================================================
 
-    /** Recupera uma propriedade sem fallback. */
     public static String get(String key) {
         return props.getProperty(key);
     }
 
-    /** Recupera propriedade ou valor padrão. */
     public static String getOrDefault(String key, String defaultValue) {
         return props.getProperty(key, defaultValue);
     }
 
-    /** Retorna todas as propriedades internas (somente leitura). */
     public static Properties getRawProperties() {
         return props;
     }
@@ -273,10 +232,6 @@ public class ConfigManager {
     //  LISTA DE PROJETOS
     // =====================================================================
 
-    /**
-     * Retorna a lista de projetos definida em:
-     * <pre>qase.projects=APP1,APP2,PORTAL</pre>
-     */
     public static List<String> getProjects() {
         String raw = props.getProperty("qase.projects", "");
 
@@ -293,7 +248,6 @@ public class ConfigManager {
     //  ENDPOINT MANAGEMENT
     // =====================================================================
 
-    /** Retorna todos os endpoints declarados (ativos ou não). */
     public static List<String> getEndpoints() {
         if (!endpointFlags.isEmpty()) {
             return new ArrayList<>(endpointFlags.keySet());
@@ -301,7 +255,6 @@ public class ConfigManager {
         return getList("qase.endpoints");
     }
 
-    /** Retorna apenas os endpoints ativos. */
     public static List<String> getActiveEndpoints() {
         if (endpointFlags.isEmpty()) {
             return getEndpoints();
@@ -312,7 +265,6 @@ public class ConfigManager {
             .collect(Collectors.toList());
     }
 
-    /** Utilitário interno para retorno de listas. */
     private static List<String> getList(String key) {
         String raw = props.getProperty(key, "");
 
@@ -329,12 +281,10 @@ public class ConfigManager {
     //  API TOKEN / BASE URL
     // =====================================================================
 
-    /** Token da API do Qase. */
     public static String getApiToken() {
         return props.getProperty("qase.api.token");
     }
 
-    /** URL base da API do Qase (default = produção). */
     public static String getApiBaseUrl() {
         return props.getProperty("qase.api.baseUrl", "https://api.qase.io/v1");
     }
@@ -343,17 +293,6 @@ public class ConfigManager {
     //  HISTÓRICO DE KPI – Diretório base
     // =====================================================================
 
-    /**
-     * <h2>Retorna o diretório base onde o histórico de KPIs deve ser salvo.</h2>
-     *
-     * <p>Configuração: <code>history.kpi.baseDir</code></p>
-     *
-     * <p>
-     * Caso o diretório não exista, será criado automaticamente.
-     * </p>
-     *
-     * @return caminho normalizado do diretório de histórico de KPIs
-     */
     public static String getKPIHistoryBaseDir() {
         String path = props.getProperty("history.kpi.baseDir", "historico/kpis").trim();
 
@@ -369,16 +308,138 @@ public class ConfigManager {
     }
 
     // =====================================================================
-    //  RELOAD
+    //  IDENTIFICADOR DE RELEASE – FORMATO E MNEMÔNICOS
     // =====================================================================
 
     /**
-     * Recarrega todo o conjunto de propriedades, permitindo atualização dinâmica
-     * sem necessidade de reinicializar a aplicação.
+     * Retorna o formato configurado para o identificador de release.
+     *
+     * Exemplo:
+     *   ${sprint}_${version}_${environment}_${platform}_${language}_${testType}
      */
+    public static String getReleaseIdentifierFormat() {
+        String raw = props.getProperty("release.identifier.format", "");
+        return raw == null ? "" : raw.trim();
+    }
+
+    /**
+     * Retorna labels amigáveis para cada mnemônico, lidos de:
+     *   identifier.mnemonic.&lt;token&gt;
+     *
+     * Exemplo:
+     *   identifier.mnemonic.sprint=Sprint
+     *   identifier.mnemonic.version=Versão
+     *
+     * @return mapa imutável token → label amigável.
+     */
+    public static Map<String, String> getIdentifierMnemonicLabels() {
+        return Collections.unmodifiableMap(buildIdentifierMnemonicLabels());
+    }
+
+    /**
+     * Retorna o conjunto de mnemônicos usados no release.identifier.format,
+     * extraídos de padrões ${token}.
+     */
+    public static Set<String> getIdentifierTokensFromFormat() {
+        String format = getReleaseIdentifierFormat();
+        if (format.isEmpty()) return Collections.emptySet();
+
+        Set<String> tokens = new LinkedHashSet<>();
+        Matcher m = IDENTIFIER_TOKEN_PATTERN.matcher(format);
+        while (m.find()) {
+            tokens.add(m.group(1));
+        }
+        return tokens;
+    }
+
+    /**
+     * Validação avançada da configuração de identificador de release.
+     *
+     * <ul>
+     *   <li>Verifica se o formato está definido;</li>
+     *   <li>Verifica se há ao menos um mnemônico ${...};</li>
+     *   <li>Verifica se cada mnemônico usado possui label em identifier.mnemonic.*;</li>
+     * </ul>
+     *
+     * Nenhuma exceção é lançada – apenas warnings são registrados em log,
+     * garantindo que o sistema siga operando mesmo com configuração parcial.
+     */
+    private static void validateReleaseIdentifierConfig() {
+        String format = getReleaseIdentifierFormat();
+
+        if (format.isEmpty()) {
+            LoggerUtils.warn("⚠️ release.identifier.format não definido no config.properties. Identificador dinâmico de release ficará indisponível.");
+            return;
+        }
+
+        Matcher matcher = IDENTIFIER_TOKEN_PATTERN.matcher(format);
+        Set<String> tokens = new LinkedHashSet<>();
+
+        while (matcher.find()) {
+            tokens.add(matcher.group(1));
+        }
+
+        if (tokens.isEmpty()) {
+            LoggerUtils.warn("⚠️ release.identifier.format definido, mas nenhum mnemônico encontrado no padrão ${token}. Formato: " + format);
+            return;
+        }
+
+        Map<String, String> labels = buildIdentifierMnemonicLabels();
+
+        for (String token : tokens) {
+            if (!labels.containsKey(token)) {
+                LoggerUtils.warn(
+                    "⚠️ Mnemônico '" + token + "' utilizado em release.identifier.format, " +
+                        "mas não há label correspondente em identifier.mnemonic." + token
+                );
+            }
+        }
+    }
+
+    /**
+     * Constrói o mapa de labels de mnemônicos a partir de identifier.mnemonic.*.
+     */
+    private static Map<String, String> buildIdentifierMnemonicLabels() {
+        Map<String, String> map = new LinkedHashMap<>();
+
+        for (String name : props.stringPropertyNames()) {
+            if (name.startsWith("identifier.mnemonic.")) {
+                String token = name.substring("identifier.mnemonic.".length());
+                String value = props.getProperty(name);
+                map.put(token, value);
+            }
+        }
+
+        return map;
+    }
+
+    // =====================================================================
+    //  RELOAD
+    // =====================================================================
+
     public static void reload() {
         props.clear();
         endpointFlags.clear();
         loadConfig();
     }
+    public static boolean isAllowedEnvironment(String env) {
+        return getList("environment.allowed").contains(env.toUpperCase());
+    }
+
+    public static boolean isAllowedPlatform(String p) {
+        return getList("platform.allowed").contains(p.toUpperCase());
+    }
+
+    public static boolean isAllowedLanguage(String p) {
+        return getList("language.allowed").contains(p.toUpperCase());
+    }
+
+    public static boolean isAllowedTestType(String p) {
+        return getList("testType.allowed").contains(p.toUpperCase());
+    }
+
+    public static String getVersionPattern() {
+        return props.getProperty("identifier.version.pattern", "\\d+\\.\\d+\\.\\d+");
+    }
+
 }

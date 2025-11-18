@@ -1,24 +1,28 @@
-package com.sysmap.wellness.report;
+package com.sysmap.wellness.report.generator;
 
-import com.sysmap.wellness.report.service.*;
+import com.sysmap.wellness.report.service.DefectAnalyticalService;
+import com.sysmap.wellness.report.service.FunctionalSummaryService;
+import com.sysmap.wellness.report.service.engine.KPIEngine;
 import com.sysmap.wellness.report.service.model.KPIData;
-import com.sysmap.wellness.report.sheet.*;
+import com.sysmap.wellness.report.sheet.DefectAnalyticalReportSheet;
+import com.sysmap.wellness.report.sheet.DefectsDashboardSheet;
+import com.sysmap.wellness.report.sheet.DefectsSyntheticSheet;
+import com.sysmap.wellness.report.sheet.ExecutiveConsolidatedSheet;
+import com.sysmap.wellness.report.sheet.ExecutiveKPISheet;
+import com.sysmap.wellness.report.sheet.FunctionalSummarySheet;
 import com.sysmap.wellness.utils.LoggerUtils;
 import com.sysmap.wellness.utils.MetricsCollector;
-
-import org.apache.poi.ss.usermodel.*;
+import org.apache.poi.ss.usermodel.Sheet;
+import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.io.BufferedWriter;
 import java.io.FileOutputStream;
 import java.io.IOException;
-
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
-
 import java.time.LocalDateTime;
 import java.util.*;
 
@@ -37,7 +41,8 @@ import java.util.*;
  * <h2>1. Preparação e organização dos dados</h2>
  * <ul>
  *   <li>Validação e preparação do caminho de saída do relatório;</li>
- *   <li>Interpretação do identificador de release com base no nome do arquivo;</li>
+ *   <li>Interpretação do identificador de release com base no nome do arquivo
+ *       (fallback);</li>
  *   <li>Coordenação entre múltiplos projetos, cada qual com seu próprio conjunto
  *       de casos, execuções e defeitos.</li>
  * </ul>
@@ -50,8 +55,8 @@ import java.util.*;
  *       (multi-release);</li>
  *   <li>O histórico de indicadores é persistido no disco, permitindo análises
  *       temporais e comparativas ao longo de diferentes execuções;</li>
- *   <li>O sistema automaticamente determina a release “ativa” ou “principal” de
- *       cada projeto, utilizada em abas executivas e comparativas.</li>
+ *   <li>O sistema utiliza o agrupamento por release para alimentar abas executivas
+ *       e o Painel Consolidado.</li>
  * </ul>
  *
  * <h2>3. Geração das visões e abas do relatório Excel</h2>
@@ -64,7 +69,7 @@ import java.util.*;
  *       e projetos, facilitando a análise de progresso e regressões;</li>
  *
  *   <li><b>Resumo Executivo por Projeto:</b> visão de alto nível dos KPIs
- *       prioritários, considerando a release principal detectada pelo sistema;</li>
+ *       prioritários, considerando a release principal de cada projeto;</li>
  *
  *   <li><b>Resumo Funcional:</b> geração por meio do
  *       {@link FunctionalSummaryService}, analisando suítes, testes executados,
@@ -113,23 +118,21 @@ import java.util.*;
  * (funcional, executiva, histórica e operacional), oferecendo insumos essenciais
  * para diagnóstico de qualidade, auditoria, planejamento e tomada de decisão.</p>
  */
-
-
 public class ReportGenerator {
 
     /**
      * Gera todo o relatório PREMIUM, incluindo:
      * <ul>
-     *   <li>KPIs multi-release (via KPIEngine)</li>
-     *   <li>Resumo funcional</li>
-     *   <li>Defeitos analíticos</li>
-     *   <li>Dashboard de defeitos</li>
-     *   <li>Defeitos sintético</li>
-     *   <li>Histórico RUN-BASED (multi-release)</li>
+     *   <li>KPIs multi-release (via KPIEngine);</li>
+     *   <li>Resumo funcional;</li>
+     *   <li>Defeitos analíticos;</li>
+     *   <li>Dashboard de defeitos;</li>
+     *   <li>Defeitos sintético;</li>
+     *   <li>Histórico RUN-BASED (multi-release).</li>
      * </ul>
      *
-     * @param consolidatedData Dados consolidados do Qase por projeto.
-     * @param outputPath Caminho final do arquivo de saída (.xlsx).
+     * @param consolidatedData Dados consolidados por projeto.
+     * @param outputPath       Caminho final do arquivo de saída (.xlsx).
      */
     public void generateReport(
         Map<String, JSONObject> consolidatedData,
@@ -348,7 +351,7 @@ public class ReportGenerator {
     /**
      * Salva um Workbook Excel no caminho especificado.
      *
-     * @param wb Workbook a ser gravado.
+     * @param wb        Workbook a ser gravado.
      * @param finalPath Caminho destino.
      * @throws IOException Se houver falha ao escrever o arquivo.
      */
@@ -392,8 +395,13 @@ public class ReportGenerator {
      * Determina qual release deve ser considerada “principal”
      * para cada projeto, utilizada pelo Resumo Executivo.
      *
+     * <p>Neste momento a regra é simples: pega o primeiro grupo
+     * encontrado na lista de KPIs (a release associada aos KPIs
+     * mais recentes daquela execução). Caso não haja grupo, usa
+     * o fallback baseado no nome do arquivo.</p>
+     *
      * @param kpisByProject KPIs agrupados por projeto.
-     * @param fallback Release padrão caso nenhuma seja encontrada.
+     * @param fallback      Release padrão caso nenhuma seja encontrada.
      * @return Mapa projeto → release principal.
      */
     private Map<String, String> buildReleaseByProjectMap(
@@ -418,7 +426,7 @@ public class ReportGenerator {
     }
 
     // =====================================================================================
-    // 🗂 Histórico RUN-BASED (agora por release)
+    // 🗂 Histórico RUN-BASED (por release)
     // =====================================================================================
 
     /**
@@ -430,11 +438,11 @@ public class ReportGenerator {
      *   <li>organização por ano/projeto/release;</li>
      * </ul>
      *
-     * @param consolidated Dados completos do consolidate.json.
-     * @param defects Defeitos enriquecidos por projeto.
-     * @param functional Resumos funcionais por projeto.
-     * @param finalPath Caminho do relatório gerado.
-     * @param kpisByProject KPIs multi-release calculados.
+     * @param consolidated   Dados completos do consolidate.json.
+     * @param defects        Defeitos enriquecidos por projeto.
+     * @param functional     Resumos funcionais por projeto.
+     * @param finalPath      Caminho do relatório gerado.
+     * @param kpisByProject  KPIs multi-release calculados.
      */
     private void generateRunBasedHistory(
         Map<String, JSONObject> consolidated,
@@ -507,9 +515,16 @@ public class ReportGenerator {
 
     /**
      * Retorna uma versão do consolidated contendo apenas os Test Plans
-     * cujo título inclui o ID da release desejada.
+     * e Test Runs associados à release desejada.
      *
-     * @param full JSON consolidado completo.
+     * <p>Regra:</p>
+     * <ul>
+     *   <li>Plan: mantido se o título contiver o {@code releaseId};</li>
+     *   <li>Run: mantido se {@code releaseIdentifier} for exatamente igual ao {@code releaseId};</li>
+     *   <li>Demais estruturas (cases, suites, defects, run_results) são preservadas.</li>
+     * </ul>
+     *
+     * @param full      JSON consolidado completo.
      * @param releaseId Identificador da release.
      * @return JSON filtrado apenas para aquela release.
      */
@@ -520,21 +535,46 @@ public class ReportGenerator {
         JSONObject filtered = new JSONObject(full.toString()); // deep clone
 
         JSONArray originalPlans = full.optJSONArray("plan");
-        JSONArray filteredPlans = new JSONArray();
+        JSONArray originalRuns = full.optJSONArray("run");
 
+        JSONArray filteredPlans = new JSONArray();
+        JSONArray filteredRuns = new JSONArray();
+
+        // PLAN — compatibilidade com títulos antigos
         if (originalPlans != null) {
             for (int i = 0; i < originalPlans.length(); i++) {
                 JSONObject p = originalPlans.optJSONObject(i);
                 if (p == null) continue;
 
                 String title = p.optString("title", "");
-                if (title.contains(releaseId)) {
+                String planRel = p.optString("releaseIdentifier", null);
+
+                // Se já tiver releaseIdentifier, preferir igualdade exata;
+                // caso contrário, fallback para title.contains(releaseId)
+                if ((planRel != null && planRel.equals(releaseId)) ||
+                    (title != null && title.contains(releaseId))) {
                     filteredPlans.put(p);
                 }
             }
         }
 
+        // RUN — usa releaseIdentifier
+        if (originalRuns != null) {
+            for (int i = 0; i < originalRuns.length(); i++) {
+                JSONObject r = originalRuns.optJSONObject(i);
+                if (r == null) continue;
+
+                String runRel = r.optString("releaseIdentifier", null);
+
+                if (runRel != null && runRel.equals(releaseId)) {
+                    filteredRuns.put(r);
+                }
+            }
+        }
+
         filtered.put("plan", filteredPlans);
+        filtered.put("run", filteredRuns);
+
         return filtered;
     }
 
