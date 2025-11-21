@@ -4,7 +4,7 @@ import com.sysmap.wellness.config.ConfigManager;
 import com.sysmap.wellness.history.HistoryDirectoryManager;
 import com.sysmap.wellness.report.generator.ReportGenerator;
 import com.sysmap.wellness.service.*;
-import com.sysmap.wellness.service.DataConsolidator;
+import com.sysmap.wellness.core.qase.gateway.DataConsolidator;
 import com.sysmap.wellness.utils.LoggerUtils;
 import com.sysmap.wellness.utils.MetricsCollector;
 

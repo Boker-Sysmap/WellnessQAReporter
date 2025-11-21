@@ -1,209 +1,226 @@
 package com.sysmap.wellness.utils;
 
 import com.sysmap.wellness.config.ConfigManager;
+
 import java.util.*;
-import java.util.regex.*;
 
 /**
- * IdentifierParser – versão final
- * Baseado 100% no formato definido no config.properties
- * release.identifier.format=${sprint}_${version}_${environment}_${platform}_${language}_${testType}
+ * IdentifierParser – versão final, POSICIONAL.
  *
- * Regras:
- *  - version e environment são obrigatórios
- *  - demais campos opcionais (podem ser null)
- *  - identifier oficial da release = version + "_" + environment
- *  - valores entre [] podem conter qualquer coisa
- *  - valores simples: [A-Za-z0-9.]+
- *  - sem busca por substring arbitrária
+ * Regras confirmadas:
+ * -------------------------------------------------------
+ * ✔ Usa release.identifier.format exatamente como está.
+ * ✔ Segmentação POSICIONAL por "_".
+ * ✔ Somente version e environment são obrigatórios.
+ * ✔ Campos opcionais → null se valor faltar ou não estiver na lista.
+ * ✔ Colchetes permitidos: [PT] → PT.
+ * ✔ Case-insensitive.
+ * ✔ Tokens EXCEDENTES → ignorados (não afetam validade).
+ * ✔ officialId = version + "_" + environment
  */
 public final class IdentifierParser {
 
-    // --------------------------------------------------------------------
-    // Resultado final do parse
-    // --------------------------------------------------------------------
+    // =============================================================
+    // Resultado do parse
+    // =============================================================
     public static final class ParsedIdentifier {
-        private final String rawIdentifier;
-        private final String releaseIdentifier;
+
+        private final String raw;
+        private final String officialId;
         private final Map<String, Object> values;
 
-        public ParsedIdentifier(String rawIdentifier,
-                                String releaseIdentifier,
-                                Map<String, Object> values) {
-            this.rawIdentifier = rawIdentifier;
-            this.releaseIdentifier = releaseIdentifier;
+        public ParsedIdentifier(String raw, String officialId, Map<String, Object> values) {
+            this.raw = raw;
+            this.officialId = officialId;
             this.values = values;
         }
 
-        /** Identificador bruto extraído do título */
-        public String getRawIdentifier() { return rawIdentifier; }
+        public String getRawIdentifier() {
+            return raw;
+        }
 
-        /** Identificador OFICIAL → version_environment */
-        public String getReleaseIdentifier() { return releaseIdentifier; }
+        /** Nome antigo ainda usado em alguns pontos do código */
+        public String getReleaseIdentifier() {
+            return officialId;
+        }
 
-        /** Mnemônicos → valores capturados */
-        public Map<String, Object> getValues() { return values; }
+        /** 🔥 NOVO MÉTODO — compatível com o pipeline atualizado */
+        public String getOfficialId() {
+            return officialId;
+        }
+
+        public Map<String, Object> getValues() {
+            return values;
+        }
 
         @Override
         public String toString() {
-            return "ParsedIdentifier{raw='" + rawIdentifier +
-                "', official='" + releaseIdentifier +
-                "', values=" + values + "}";
+            return "ParsedIdentifier{raw='" + raw + "', officialId='" + officialId + "', values=" + values + "}";
         }
     }
 
-    // --------------------------------------------------------------------
-    // Estrutura interna para regex preparado
-    // --------------------------------------------------------------------
-    private static class FormatRegex {
-        final Pattern pattern;
+    // =============================================================
+    // Estrutura do formato lida do config
+    // =============================================================
+    private static final class FormatDefinition {
         final List<String> tokens;
+        final int versionIndex;
+        final int environmentIndex;
 
-        FormatRegex(Pattern p, List<String> t) {
-            this.pattern = p;
-            this.tokens = t;
+        FormatDefinition(List<String> tokens, int versionIndex, int environmentIndex) {
+            this.tokens = tokens;
+            this.versionIndex = versionIndex;
+            this.environmentIndex = environmentIndex;
         }
     }
 
-    private static volatile FormatRegex CACHED;
+    private static volatile FormatDefinition CACHED;
 
-    private IdentifierParser() {}
+    private IdentifierParser() {
+        // uso estático.
+    }
 
-    // ====================================================================
-    // PUBLIC API
-    // ====================================================================
-
-    /**
-     * Método principal usado pelo DataConsolidator.
-     */
+    // =============================================================
+    // API PRINCIPAL
+    // =============================================================
     public static ParsedIdentifier parse(String text) {
 
-        if (text == null || text.isBlank())
-            return null;
+        if (text == null) return null;
+        String trimmed = text.trim();
+        if (trimmed.isEmpty()) return null;
 
-        FormatRegex fr = getOrBuildRegex();
-        if (fr == null) return null;
+        FormatDefinition def = getOrBuildFormat();
+        if (def == null) return null;
 
-        Matcher m = fr.pattern.matcher(text.trim());
-        if (!m.find()) return null; // regex não casou → UNKNOWN
+        String[] parts = trimmed.split("_");
 
-        // valor bruto (ex.: S6_3.2.0_PROD_AND_PT_MANUAL)
-        String raw = m.group(0);
-
-        // capturar campos
         Map<String, Object> values = new LinkedHashMap<>();
 
-        for (int i = 0; i < fr.tokens.size(); i++) {
+        for (int pos = 0; pos < def.tokens.size(); pos++) {
 
-            String token = fr.tokens.get(i);
-            String rawValue = m.group(i + 1);
+            String token = def.tokens.get(pos);
+            String rawValue = (pos < parts.length ? parts[pos] : null);
 
-            if (rawValue == null) {
-                values.put(token, null);
-                continue;
+            String normalized = normalize(rawValue);
+
+            switch (token) {
+
+                case "version":
+                    if (normalized == null) return null;
+                    if (!normalized.matches(ConfigManager.getVersionPattern())) return null;
+                    values.put("version", normalized);
+                    break;
+
+                case "environment":
+                    if (normalized == null) return null;
+                    if (!ConfigManager.isAllowedEnvironment(normalized)) return null;
+                    values.put("environment", normalized);
+                    break;
+
+                case "platform":
+                    values.put("platform",
+                        (normalized != null && ConfigManager.isAllowedPlatform(normalized))
+                            ? normalized : null
+                    );
+                    break;
+
+                case "language":
+                    values.put("language",
+                        (normalized != null && ConfigManager.isAllowedLanguage(normalized))
+                            ? normalized : null
+                    );
+                    break;
+
+                case "testType":
+                    values.put("testType",
+                        (normalized != null && ConfigManager.isAllowedTestType(normalized))
+                            ? normalized : null
+                    );
+                    break;
+
+                case "date":
+                    values.put("date", normalized);
+                    break;
+
+                default:
+                    // Qualquer mnemônico extra definido no config
+                    values.put(token, normalized);
             }
-
-            String v = rawValue.trim();
-
-            // remover colchetes caso existam
-            if (v.startsWith("[") && v.endsWith("]")) {
-                v = v.substring(1, v.length() - 1).trim();
-            }
-
-            // normalizar para maiúsculas
-            v = v.toUpperCase();
-
-            // validar allowed lists
-            if (token.equals("environment")) {
-                if (!ConfigManager.isAllowedEnvironment(v)) return null;
-            }
-            if (token.equals("platform")) {
-                if (!ConfigManager.isAllowedPlatform(v)) v = null;
-            }
-            if (token.equals("language")) {
-                if (!ConfigManager.isAllowedLanguage(v)) v = null;
-            }
-            if (token.equals("testType")) {
-                if (!ConfigManager.isAllowedTestType(v)) v = null;
-            }
-
-            values.put(token, v);
         }
 
-        // -------------------------------
-        // VALIDAR OBRIGATÓRIOS
-        // -------------------------------
-        String version = values.get("version") == null ? null : values.get("version").toString();
-        String environment = values.get("environment") == null ? null : values.get("environment").toString();
+        // ---------------------------------------------------------
+        // Campos obrigatórios
+        // ---------------------------------------------------------
+        String version = (String) values.get("version");
+        String env = (String) values.get("environment");
 
-        if (version == null || environment == null)
-            return null;
+        if (version == null || env == null) return null;
 
-        // validar regex da versão
-        if (!version.matches(ConfigManager.getVersionPattern()))
-            return null;
+        String official = version + "_" + env;
 
-        // construir release oficial
-        String official = version + "_" + environment;
-
-        return new ParsedIdentifier(raw, official, values);
+        return new ParsedIdentifier(trimmed, official, values);
     }
 
-    // ====================================================================
-    // REGEX BUILDER
-    // ====================================================================
-    private static FormatRegex getOrBuildRegex() {
-        FormatRegex c = CACHED;
-        if (c != null) return c;
+    // =============================================================
+    // Build format from config
+    // =============================================================
+    private static FormatDefinition getOrBuildFormat() {
+        if (CACHED != null) return CACHED;
 
         synchronized (IdentifierParser.class) {
             if (CACHED != null) return CACHED;
-            CACHED = buildRegex();
+
+            CACHED = buildFormat();
             return CACHED;
         }
     }
 
-    private static FormatRegex buildRegex() {
+    private static FormatDefinition buildFormat() {
 
-        String format = ConfigManager.getReleaseIdentifierFormat();
-        if (format == null || format.isBlank()) return null;
+        String fmt = ConfigManager.getReleaseIdentifierFormat();
+        if (fmt == null) return null;
 
-        StringBuilder r = new StringBuilder();
+        String[] segments = fmt.trim().split("_");
+
         List<String> tokens = new ArrayList<>();
+        int versionIdx = -1;
+        int envIdx = -1;
 
-        for (int i = 0; i < format.length();) {
-            char c = format.charAt(i);
+        for (int i = 0; i < segments.length; i++) {
+            String s = segments[i].trim();
 
-            if (c == '$' && i + 1 < format.length() && format.charAt(i+1) == '{') {
-                int end = format.indexOf("}", i+2);
-
-                String token = format.substring(i+2, end).trim();
+            if (s.startsWith("${") && s.endsWith("}")) {
+                String token = s.substring(2, s.length() - 1).trim();
                 tokens.add(token);
 
-                r.append("(")
-                    .append("\\[[^\\]]+\\]") // múltiplo
-                    .append("|")
-                    .append("[A-Za-z0-9.]+") // simples
-                    .append(")");
+                if (token.equals("version")) versionIdx = i;
+                if (token.equals("environment")) envIdx = i;
 
-                i = end + 1;
-                continue;
+            } else {
+                // suportando literais no formato (muito raro, mas permitido)
+                tokens.add(s);
             }
-
-            if (c == '_' || c == '-')
-                r.append("[-_]");
-            else {
-                if ("\\.[]{}()+-*?^$|".indexOf(c) >= 0)
-                    r.append("\\");
-                r.append(c);
-            }
-            i++;
         }
 
-        // lookahead para não capturar lixo
-        r.append("(?=$|[^A-Za-z0-9\\[])");
+        if (versionIdx < 0 || envIdx < 0) return null;
 
-        Pattern pattern = Pattern.compile(r.toString(), Pattern.CASE_INSENSITIVE);
-        return new FormatRegex(pattern, tokens);
+        return new FormatDefinition(tokens, versionIdx, envIdx);
+    }
+
+    // =============================================================
+    // Normalização
+    // =============================================================
+    private static String normalize(String raw) {
+        if (raw == null) return null;
+        String v = raw.trim();
+        if (v.isEmpty()) return null;
+
+        // remove colchetes → [PT] vira PT
+        if (v.startsWith("[") && v.endsWith("]") && v.length() > 2)
+            v = v.substring(1, v.length() - 1);
+
+        if (v.isEmpty()) return null;
+
+        return v.toUpperCase(Locale.ROOT);
     }
 }

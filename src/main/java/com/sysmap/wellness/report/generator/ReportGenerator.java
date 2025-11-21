@@ -1,139 +1,25 @@
 package com.sysmap.wellness.report.generator;
 
+import com.sysmap.wellness.core.excel.builder.ReportWorkbookBuilder;
 import com.sysmap.wellness.report.service.DefectAnalyticalService;
 import com.sysmap.wellness.report.service.FunctionalSummaryService;
 import com.sysmap.wellness.report.service.engine.KPIEngine;
 import com.sysmap.wellness.report.service.model.KPIData;
-import com.sysmap.wellness.report.sheet.DefectAnalyticalReportSheet;
-import com.sysmap.wellness.report.sheet.DefectsDashboardSheet;
-import com.sysmap.wellness.report.sheet.DefectsSyntheticSheet;
-import com.sysmap.wellness.report.sheet.ExecutiveConsolidatedSheet;
-import com.sysmap.wellness.report.sheet.ExecutiveKPISheet;
-import com.sysmap.wellness.report.sheet.FunctionalSummarySheet;
+import com.sysmap.wellness.utils.IdentifierParser;
 import com.sysmap.wellness.utils.LoggerUtils;
 import com.sysmap.wellness.utils.MetricsCollector;
-import org.apache.poi.ss.usermodel.Sheet;
-import org.apache.poi.ss.usermodel.Workbook;
 import org.apache.poi.xssf.usermodel.XSSFWorkbook;
 import org.json.JSONArray;
 import org.json.JSONObject;
 
-import java.io.BufferedWriter;
-import java.io.FileOutputStream;
-import java.io.IOException;
+import java.io.*;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.*;
 import java.time.LocalDateTime;
 import java.util.*;
 
-/**
- * Responsável por orquestrar e coordenar todo o processo de geração do relatório
- * consolidado do WellnessQAReporter. Esta classe atua como o componente central da
- * camada de relatórios, integrando serviços especializados, consolidando informações
- * provenientes do Qase e gerando uma visão completa, estruturada e auditável dos
- * resultados de teste, defeitos e métricas de qualidade.
- *
- * <p>O {@code ReportGenerator} funciona como o “pipeline de montagem” do relatório,
- * executando uma sequência de etapas bem definidas que abrangem desde a preparação
- * dos dados até a geração do arquivo final. Entre suas principais responsabilidades,
- * destacam-se:</p>
- *
- * <h2>1. Preparação e organização dos dados</h2>
- * <ul>
- *   <li>Validação e preparação do caminho de saída do relatório;</li>
- *   <li>Interpretação do identificador de release com base no nome do arquivo
- *       (fallback);</li>
- *   <li>Coordenação entre múltiplos projetos, cada qual com seu próprio conjunto
- *       de casos, execuções e defeitos.</li>
- * </ul>
- *
- * <h2>2. Processamento de KPIs por meio do motor de indicadores</h2>
- * <p>O {@link KPIEngine} é acionado para detectar releases, filtrar os dados por
- * release e calcular indicadores de negócio e qualidade. Além disso:</p>
- * <ul>
- *   <li>Os KPIs por release são enriquecidos com o contexto de agrupamento
- *       (multi-release);</li>
- *   <li>O histórico de indicadores é persistido no disco, permitindo análises
- *       temporais e comparativas ao longo de diferentes execuções;</li>
- *   <li>O sistema utiliza o agrupamento por release para alimentar abas executivas
- *       e o Painel Consolidado.</li>
- * </ul>
- *
- * <h2>3. Geração das visões e abas do relatório Excel</h2>
- *
- * <p>O {@code ReportGenerator} é responsável pela criação coordenada das seguintes
- * abas, cada uma gerada por um componente especializado:</p>
- *
- * <ul>
- *   <li><b>Painel Consolidado:</b> visão unificada dos KPIs de todas as releases
- *       e projetos, facilitando a análise de progresso e regressões;</li>
- *
- *   <li><b>Resumo Executivo por Projeto:</b> visão de alto nível dos KPIs
- *       prioritários, considerando a release principal de cada projeto;</li>
- *
- *   <li><b>Resumo Funcional:</b> geração por meio do
- *       {@link FunctionalSummaryService}, analisando suítes, testes executados,
- *       resultados e distribuição funcional de defeitos;</li>
- *
- *   <li><b>Defeitos Analítico:</b> criado pelo {@link DefectAnalyticalService},
- *       correlacionando defeitos a casos, suites, usuários, datas e severidades,
- *       além de resolver links entre execuções e defeitos;</li>
- *
- *   <li><b>Dashboard de Defeitos:</b> camada de visualização simples e direta,
- *       destacando volume, severidade e comportamento dos defeitos por projeto;</li>
- *
- *   <li><b>Defeitos Sintético:</b> resumo numérico e tabelado dos defeitos, ideal
- *       para apresentações e comunicação executiva.</li>
- * </ul>
- *
- * <h2>4. Formatação, ajustes e consistência visual</h2>
- * <ul>
- *   <li>Ajuste automático de largura das colunas;</li>
- *   <li>Padronização de estilos e cabeçalhos;</li>
- *   <li>Ordenação das abas e nomenclaturas consistentes;</li>
- *   <li>Criação de workbooks e gerenciamento de streams de escrita.</li>
- * </ul>
- *
- * <h2>5. Geração do histórico RUN-BASED por release</h2>
- * <p>O {@code ReportGenerator} também é responsável por persistir snapshots
- * por release, permitindo reconstruções históricas de execução, auditorias e
- * acompanhamento temporal. Este processo inclui:</p>
- * <ul>
- *   <li>Filtragem do consolidate.json por release;</li>
- *   <li>Organização dos snapshots por projeto, ano e release;</li>
- *   <li>Geração de metadados contendo data, release id, arquivo gerado e timestamp;</li>
- *   <li>Persistência de estruturas JSON padronizadas em diretórios de histórico.</li>
- * </ul>
- *
- * <h2>6. Extensibilidade e arquitetura modular</h2>
- * <p>A classe foi projetada para suportar novas fontes de dados, novos KPIs,
- * novas abas e novas regras de enriquecimento. Como o processamento é distribuído
- * entre serviços independentes (KPIEngine, FunctionalSummaryService,
- * DefectAnalyticalService, etc.), extensões podem ser adicionadas sem impacto
- * estrutural no pipeline principal.</p>
- *
- * <p>Em resumo, o {@code ReportGenerator} é o núcleo da geração de relatórios do
- * WellnessQAReporter, sendo responsável por transformar dados brutos consolidados
- * em uma saída analítica completa, organizada por múltiplas perspectivas
- * (funcional, executiva, histórica e operacional), oferecendo insumos essenciais
- * para diagnóstico de qualidade, auditoria, planejamento e tomada de decisão.</p>
- */
 public class ReportGenerator {
 
-    /**
-     * Gera todo o relatório PREMIUM, incluindo:
-     * <ul>
-     *   <li>KPIs multi-release (via KPIEngine);</li>
-     *   <li>Resumo funcional;</li>
-     *   <li>Defeitos analíticos;</li>
-     *   <li>Dashboard de defeitos;</li>
-     *   <li>Defeitos sintético;</li>
-     *   <li>Histórico RUN-BASED (multi-release).</li>
-     * </ul>
-     *
-     * @param consolidatedData Dados consolidados por projeto.
-     * @param outputPath       Caminho final do arquivo de saída (.xlsx).
-     */
     public void generateReport(
         Map<String, JSONObject> consolidatedData,
         Path outputPath
@@ -144,154 +30,100 @@ public class ReportGenerator {
 
         try {
             // -----------------------------------------------------
-            // 1) Preparar caminho final do relatório
+            // Caminho final
             // -----------------------------------------------------
             Path finalPath = prepareOutputPath(outputPath);
 
-            String fileBasedReleaseId =
-                stripExt(finalPath.getFileName().toString());
-
-            LoggerUtils.info("🔖 ReleaseId (fallback) via nome do arquivo: " + fileBasedReleaseId);
-
-            // Serviços auxiliares
-            FunctionalSummaryService summaryService =
-                new FunctionalSummaryService();
-            DefectAnalyticalService defectService =
-                new DefectAnalyticalService();
+            FunctionalSummaryService summaryService = new FunctionalSummaryService();
+            DefectAnalyticalService defectService = new DefectAnalyticalService();
 
             // -----------------------------------------------------
-            // 2) KPIs via KPIEngine (inclui histórico)
+            // KPIEngine
             // -----------------------------------------------------
             LoggerUtils.section("📊 KPIs via KPIEngine");
 
-            KPIEngine kpiEngine = new KPIEngine();
+            KPIEngine kpiEngine = new KPIEngine(
+                IdentifierParser::parse,
+                null // Coverage + Results já são incluídos automaticamente
+            );
 
+            // Agora populate:
+            // - kpisByProject
+            // - consolidatedData[x].releaseSummaries
             Map<String, List<KPIData>> kpisByProject =
-                kpiEngine.calculateForAllProjects(consolidatedData, fileBasedReleaseId);
+                kpiEngine.calculateForAllProjects(consolidatedData);
 
-            LoggerUtils.success("✔ KPIs calculados com histórico gravado");
-
-            // release "principal" por projeto (usada apenas nas abas executivas)
-            Map<String, String> releaseByProject =
-                buildReleaseByProjectMap(kpisByProject, fileBasedReleaseId);
+            LoggerUtils.success("✔ KPIs calculados");
 
             // -----------------------------------------------------
-            // 3) Resumo Funcional
+            // Resumo de releases — a partir do dado já inserido pelo KPIEngine
             // -----------------------------------------------------
-            LoggerUtils.section("📘 Resumo Funcional");
+            Map<String, Map<String, JSONObject>> summariesByProject = new LinkedHashMap<>();
 
+            for (String project : consolidatedData.keySet()) {
+
+                JSONObject obj = consolidatedData.get(project);
+                JSONArray arr = obj.optJSONArray("releaseSummaries");
+
+                Map<String, JSONObject> map = new LinkedHashMap<>();
+
+                if (arr != null) {
+                    for (int i = 0; i < arr.length(); i++) {
+                        JSONObject row = arr.getJSONObject(i);
+                        String rel = row.optString("releaseId", "");
+                        if (!rel.isBlank()) {
+                            map.put(rel, row);
+                        }
+                    }
+                }
+
+                summariesByProject.put(project, map);
+            }
+
+            // -----------------------------------------------------
+            // Mapa PROJETO → SET<RELEASE>
+            // -----------------------------------------------------
+            Map<String, Set<String>> releasesByProject = new LinkedHashMap<>();
+
+            for (String project : summariesByProject.keySet()) {
+                releasesByProject.put(project, summariesByProject.get(project).keySet());
+            }
+
+            // -----------------------------------------------------
+            // Resumo Funcional
+            // -----------------------------------------------------
             Map<String, JSONObject> functionalSummaries =
                 summaryService.prepareData(consolidatedData);
 
             // -----------------------------------------------------
-            // 4) Defeitos Analítico (enriquecido)
+            // Defeitos Analítico
             // -----------------------------------------------------
-            LoggerUtils.section("🐞 Defeitos (RUN-BASED)");
-
             Map<String, JSONArray> enrichedDefects =
                 defectService.prepareData(consolidatedData);
 
             // -----------------------------------------------------
-            // 5) Gerar Excel completo
+            // Criar Excel
             // -----------------------------------------------------
-            try (XSSFWorkbook wb = new XSSFWorkbook()) {
+            ReportWorkbookBuilder builder = new ReportWorkbookBuilder();
+            XSSFWorkbook wb = builder.buildWorkbook(
+                consolidatedData,
+                kpisByProject,
+                releasesByProject,
+                functionalSummaries,
+                enrichedDefects
+            );
 
-                // Painel Consolidado
-                ExecutiveConsolidatedSheet.create(
-                    wb,
-                    kpisByProject,
-                    releaseByProject
-                );
-                wb.setSheetOrder("Painel Consolidado", 0);
+            saveWorkbook(wb, finalPath);
 
-                // Resumos Executivos (1 por projeto)
-                for (String project : kpisByProject.keySet()) {
-
-                    String releaseId = releaseByProject.get(project);
-
-                    ExecutiveKPISheet.create(
-                        wb,
-                        kpisByProject.get(project),
-                        project + " – Resumo Executivo",
-                        releaseId
-                    );
-                }
-
-                // Resumo Funcional
-                for (String project : functionalSummaries.keySet()) {
-
-                    JSONObject summary = functionalSummaries.get(project);
-                    Map<String, JSONObject> map = new LinkedHashMap<>();
-                    map.put(project, summary);
-
-                    new FunctionalSummarySheet().create(
-                        wb,
-                        map,
-                        project + " – Resumo Funcional"
-                    );
-                }
-
-                // Defeitos Analítico
-                for (String project : enrichedDefects.keySet()) {
-
-                    Map<String, JSONArray> map = new LinkedHashMap<>();
-                    map.put(project, enrichedDefects.get(project));
-
-                    new DefectAnalyticalReportSheet().create(
-                        wb,
-                        map,
-                        project + " – Defeitos Analítico"
-                    );
-                }
-
-                // Dashboard
-                for (String project : enrichedDefects.keySet()) {
-
-                    JSONObject d = new JSONObject();
-                    d.put("defects", enrichedDefects.get(project));
-
-                    DefectsDashboardSheet.create(
-                        wb,
-                        d,
-                        project + " – Defeitos Dashboard"
-                    );
-                }
-
-                // Sintético
-                for (String project : enrichedDefects.keySet()) {
-
-                    JSONObject d = new JSONObject();
-                    d.put("defects", enrichedDefects.get(project));
-
-                    DefectsSyntheticSheet.create(
-                        wb,
-                        d,
-                        project + " – Defeitos Sintético"
-                    );
-                }
-
-                adjustAllColumns(wb);
-                saveWorkbook(wb, finalPath);
-
-                // -----------------------------------------------------
-                // 6) Histórico RUN-BASED (agora multi-release)
-                // -----------------------------------------------------
-                generateRunBasedHistory(
-                    consolidatedData,
-                    enrichedDefects,
-                    functionalSummaries,
-                    finalPath,
-                    kpisByProject
-                );
-            }
+            // -----------------------------------------------------
+            // Histórico RUN-BASED
+            // -----------------------------------------------------
+            generateRunBasedHistory(consolidatedData, finalPath, releasesByProject);
 
             long end = System.nanoTime();
-            LoggerUtils.success("🏁 Relatório gerado: " + finalPath);
 
-            MetricsCollector.timing(
-                "report.totalMs",
-                (end - start) / 1_000_000
-            );
+            LoggerUtils.success("🏁 Relatório gerado: " + finalPath);
+            MetricsCollector.timing("report.totalMs", (end - start) / 1_000_000);
 
         } catch (Exception e) {
             LoggerUtils.error("💥 Erro crítico no ReportGenerator", e);
@@ -299,296 +131,151 @@ public class ReportGenerator {
         }
     }
 
-    // =====================================================================================
-    // 🔧 Helpers
-    // =====================================================================================
+    // =====================================================================
+    // RELEASE MAP (NÃO USADO MAIS — substituído por summaries)
+    // =====================================================================
 
-    /**
-     * Garante a criação do diretório de saída e retorna o caminho final
-     * onde o relatório será gravado.
-     *
-     * @param outputPath Caminho indicado pelo usuário.
-     * @return Caminho final ajustado dentro de /output/reports.
-     * @throws IOException Se não for possível criar diretórios.
-     */
-    private Path prepareOutputPath(Path outputPath) throws IOException {
-
-        Path dir = Path.of("output", "reports");
-        if (!Files.exists(dir)) Files.createDirectories(dir);
-
-        Path finalPath = dir.resolve(outputPath.getFileName());
-
-        LoggerUtils.step("📄 Arquivo final: " + finalPath);
-        return finalPath;
-    }
-
-    /**
-     * Ajusta automaticamente a largura das colunas de todas as abas.
-     *
-     * @param wb Workbook Excel criado.
-     */
-    private void adjustAllColumns(Workbook wb) {
-
-        for (int i = 0; i < wb.getNumberOfSheets(); i++) {
-
-            Sheet sheet = wb.getSheetAt(i);
-            if (sheet.getRow(0) == null) continue;
-
-            int cols = sheet.getRow(0).getPhysicalNumberOfCells();
-
-            for (int c = 0; c < cols; c++) {
-                try {
-                    sheet.autoSizeColumn(c);
-                    sheet.setColumnWidth(
-                        c,
-                        Math.min(sheet.getColumnWidth(c) + 1500, 18000)
-                    );
-                } catch (Exception ignored) {}
-            }
-        }
-    }
-
-    /**
-     * Salva um Workbook Excel no caminho especificado.
-     *
-     * @param wb        Workbook a ser gravado.
-     * @param finalPath Caminho destino.
-     * @throws IOException Se houver falha ao escrever o arquivo.
-     */
-    private void saveWorkbook(Workbook wb, Path finalPath) throws IOException {
-
-        try (FileOutputStream fos = new FileOutputStream(finalPath.toFile())) {
-            wb.write(fos);
-        }
-
-        LoggerUtils.success("💾 Excel salvo em " + finalPath);
-    }
-
-    /**
-     * Remove a extensão de um nome de arquivo.
-     *
-     * @param name Nome do arquivo.
-     * @return Nome sem extensão.
-     */
-    private String stripExt(String name) {
-        int idx = name.lastIndexOf(".");
-        return idx == -1 ? name : name.substring(0, idx);
-    }
-
-    /**
-     * Normaliza texto para uso em nomes de diretórios.
-     *
-     * @param s String de entrada.
-     * @return Texto normalizado.
-     */
-    private String normalize(String s) {
-        return s.toLowerCase()
-            .replace(" ", "_")
-            .replaceAll("[^a-z0-9_]", "");
-    }
-
-    // =====================================================================================
-    // 🧠 Release "principal" por projeto (usado pelas abas executivas)
-    // =====================================================================================
-
-    /**
-     * Determina qual release deve ser considerada “principal”
-     * para cada projeto, utilizada pelo Resumo Executivo.
-     *
-     * <p>Neste momento a regra é simples: pega o primeiro grupo
-     * encontrado na lista de KPIs (a release associada aos KPIs
-     * mais recentes daquela execução). Caso não haja grupo, usa
-     * o fallback baseado no nome do arquivo.</p>
-     *
-     * @param kpisByProject KPIs agrupados por projeto.
-     * @param fallback      Release padrão caso nenhuma seja encontrada.
-     * @return Mapa projeto → release principal.
-     */
-    private Map<String, String> buildReleaseByProjectMap(
-        Map<String, List<KPIData>> kpisByProject,
-        String fallback
+    @Deprecated
+    private Map<String, Set<String>> buildReleaseMap(
+        Map<String, List<KPIData>> kpisByProject
     ) {
-        Map<String, String> map = new LinkedHashMap<>();
+        Map<String, Set<String>> map = new LinkedHashMap<>();
 
         for (String project : kpisByProject.keySet()) {
 
-            String release =
-                kpisByProject.get(project).stream()
-                    .filter(k -> k.getGroup() != null && !k.getGroup().isEmpty())
-                    .map(KPIData::getGroup)
-                    .findFirst()
-                    .orElse(fallback);
+            Set<String> releases = new TreeSet<>(Comparator.reverseOrder());
 
-            map.put(project, release);
+            for (KPIData k : kpisByProject.get(project)) {
+                if (k.getGroup() != null && !k.getGroup().isBlank()) {
+                    releases.add(k.getGroup());
+                }
+            }
+
+            map.put(project, releases);
         }
 
         return map;
     }
 
-    // =====================================================================================
-    // 🗂 Histórico RUN-BASED (por release)
-    // =====================================================================================
+    // =====================================================================
+    // Output / History (inalterado)
+    // =====================================================================
 
-    /**
-     * Salva o histórico RUN-BASED para cada projeto e release detectada.
-     * Inclui:
-     * <ul>
-     *   <li>consolidated filtrado por release;</li>
-     *   <li>snapshot da release;</li>
-     *   <li>organização por ano/projeto/release;</li>
-     * </ul>
-     *
-     * @param consolidated   Dados completos do consolidate.json.
-     * @param defects        Defeitos enriquecidos por projeto.
-     * @param functional     Resumos funcionais por projeto.
-     * @param finalPath      Caminho do relatório gerado.
-     * @param kpisByProject  KPIs multi-release calculados.
-     */
+    private Path prepareOutputPath(Path outputPath) throws IOException {
+        Path dir = Path.of("output", "reports");
+        if (!Files.exists(dir)) Files.createDirectories(dir);
+        return dir.resolve(outputPath.getFileName());
+    }
+
+    private void saveWorkbook(XSSFWorkbook wb, Path finalPath) throws IOException {
+        try (FileOutputStream fos = new FileOutputStream(finalPath.toFile())) {
+            wb.write(fos);
+        }
+        LoggerUtils.success("💾 Excel salvo em " + finalPath);
+    }
+
     private void generateRunBasedHistory(
         Map<String, JSONObject> consolidated,
-        Map<String, JSONArray> defects,
-        Map<String, JSONObject> functional,
         Path finalPath,
-        Map<String, List<KPIData>> kpisByProject
+        Map<String, Set<String>> releasesByProject
     ) {
-        LoggerUtils.section("📚 Salvando histórico RUN-BASED (multi-release)");
+
+        LoggerUtils.section("📚 Salvando histórico RUN-BASED");
 
         LocalDateTime now = LocalDateTime.now();
         String year = String.valueOf(now.getYear());
 
         for (String project : consolidated.keySet()) {
 
-            List<KPIData> projectKpis = kpisByProject.get(project);
-            if (projectKpis == null || projectKpis.isEmpty()) {
-                LoggerUtils.warn("⚠ Nenhum KPI encontrado para " + project + " ao salvar histórico.");
-                continue;
-            }
-
-            // releases distintas presentes nos KPIs
-            Set<String> releases = new TreeSet<>(Comparator.reverseOrder());
-            for (KPIData k : projectKpis) {
-                String g = k.getGroup();
-                if (g != null && !g.isEmpty()) {
-                    releases.add(g);
-                }
-            }
-
-            if (releases.isEmpty()) {
-                LoggerUtils.warn("⚠ Nenhuma release em KPIs para " + project + " ao salvar histórico.");
-                continue;
-            }
+            Set<String> releases = releasesByProject.get(project);
+            if (releases == null || releases.isEmpty()) continue;
 
             for (String releaseId : releases) {
 
-                Path relDir =
-                    Paths.get("historico", "releases", normalize(project), year, releaseId);
-
-                Path snapDir =
-                    Paths.get("historico", "snapshots", normalize(project), year, releaseId);
+                Path relDir = Paths.get("historico", "releases",
+                    normalize(project), year, releaseId);
+                Path snapDir = Paths.get("historico", "snapshots",
+                    normalize(project), year, releaseId);
 
                 try {
                     Files.createDirectories(relDir);
                     Files.createDirectories(snapDir);
 
-                    JSONObject info = new JSONObject();
-                    info.put("project", project);
-                    info.put("releaseId", releaseId);
-                    info.put("year", year);
-                    info.put("generatedAt", now.toString());
-                    info.put("reportFile", finalPath.getFileName().toString());
+                    JSONObject info = new JSONObject()
+                        .put("project", project)
+                        .put("releaseId", releaseId)
+                        .put("year", year)
+                        .put("generatedAt", now.toString())
+                        .put("reportFile", finalPath.getFileName().toString());
 
-                    // consolidated filtrado por release
-                    JSONObject fullConsolidated = consolidated.get(project);
-                    JSONObject filteredConsolidated =
-                        filterConsolidatedByRelease(fullConsolidated, releaseId);
+                    JSONObject filtered =
+                        filterConsolidatedByRelease(consolidated.get(project), releaseId);
 
-                    writeJson(filteredConsolidated, snapDir.resolve("consolidated.json"));
+                    writeJson(filtered, snapDir.resolve("consolidated.json"));
                     writeJson(info, relDir.resolve("release_snapshot.json"));
 
                 } catch (Exception e) {
-                    LoggerUtils.error("⚠ Falha ao salvar histórico para " + project +
-                        " / release " + releaseId, e);
+                    LoggerUtils.error(
+                        "⚠ Falha ao salvar histórico para " + project + "/" + releaseId, e
+                    );
                 }
             }
         }
     }
 
-    /**
-     * Retorna uma versão do consolidated contendo apenas os Test Plans
-     * e Test Runs associados à release desejada.
-     *
-     * <p>Regra:</p>
-     * <ul>
-     *   <li>Plan: mantido se o título contiver o {@code releaseId};</li>
-     *   <li>Run: mantido se {@code releaseIdentifier} for exatamente igual ao {@code releaseId};</li>
-     *   <li>Demais estruturas (cases, suites, defects, run_results) são preservadas.</li>
-     * </ul>
-     *
-     * @param full      JSON consolidado completo.
-     * @param releaseId Identificador da release.
-     * @return JSON filtrado apenas para aquela release.
-     */
     private JSONObject filterConsolidatedByRelease(JSONObject full, String releaseId) {
 
         if (full == null) return null;
 
-        JSONObject filtered = new JSONObject(full.toString()); // deep clone
+        JSONObject filtered = new JSONObject(full.toString());
 
-        JSONArray originalPlans = full.optJSONArray("plan");
-        JSONArray originalRuns = full.optJSONArray("run");
+        JSONArray plans = full.optJSONArray("plan");
+        JSONArray runs = full.optJSONArray("run");
 
-        JSONArray filteredPlans = new JSONArray();
-        JSONArray filteredRuns = new JSONArray();
+        JSONArray fp = new JSONArray();
+        JSONArray fr = new JSONArray();
 
-        // PLAN — compatibilidade com títulos antigos
-        if (originalPlans != null) {
-            for (int i = 0; i < originalPlans.length(); i++) {
-                JSONObject p = originalPlans.optJSONObject(i);
+        if (plans != null) {
+            for (int i = 0; i < plans.length(); i++) {
+                JSONObject p = plans.optJSONObject(i);
                 if (p == null) continue;
 
-                String title = p.optString("title", "");
-                String planRel = p.optString("releaseIdentifier", null);
-
-                // Se já tiver releaseIdentifier, preferir igualdade exata;
-                // caso contrário, fallback para title.contains(releaseId)
-                if ((planRel != null && planRel.equals(releaseId)) ||
-                    (title != null && title.contains(releaseId))) {
-                    filteredPlans.put(p);
+                var parsed = IdentifierParser.parse(p.optString("title", ""));
+                if (parsed != null && releaseId.equals(parsed.getOfficialId())) {
+                    fp.put(p);
                 }
             }
         }
 
-        // RUN — usa releaseIdentifier
-        if (originalRuns != null) {
-            for (int i = 0; i < originalRuns.length(); i++) {
-                JSONObject r = originalRuns.optJSONObject(i);
+        if (runs != null) {
+            for (int i = 0; i < runs.length(); i++) {
+                JSONObject r = runs.optJSONObject(i);
                 if (r == null) continue;
 
-                String runRel = r.optString("releaseIdentifier", null);
-
-                if (runRel != null && runRel.equals(releaseId)) {
-                    filteredRuns.put(r);
+                var parsed = IdentifierParser.parse(r.optString("title", ""));
+                if (parsed != null && releaseId.equals(parsed.getOfficialId())) {
+                    fr.put(r);
                 }
             }
         }
 
-        filtered.put("plan", filteredPlans);
-        filtered.put("run", filteredRuns);
+        filtered.put("plan", fp);
+        filtered.put("run", fr);
 
         return filtered;
     }
 
-    /**
-     * Grava qualquer JSON em disco com indentação 2.
-     *
-     * @param json Objeto JSON a ser salvo.
-     * @param path Caminho destino.
-     */
     private void writeJson(JSONObject json, Path path) {
         try (BufferedWriter bw = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
             bw.write(json.toString(2));
         } catch (Exception e) {
             LoggerUtils.error("❌ Erro ao salvar JSON em " + path, e);
         }
+    }
+
+    private String normalize(String s) {
+        return s.toLowerCase(Locale.ROOT)
+            .replace(" ", "_")
+            .replaceAll("[^a-z0-9_]", "");
     }
 }

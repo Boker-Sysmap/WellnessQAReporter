@@ -1,6 +1,6 @@
 package com.sysmap.wellness.report.service.model;
 
-import com.sysmap.wellness.service.consolidator.DataConsolidator;
+import com.sysmap.wellness.core.qase.gateway.DataConsolidator;
 import org.json.JSONObject;
 
 import java.util.Collections;

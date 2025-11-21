@@ -1,7 +1,7 @@
 package com.sysmap.wellness.service;
 
 import com.sysmap.wellness.config.ConfigManager;
-import com.sysmap.wellness.service.consolidator.DataConsolidator;
+import com.sysmap.wellness.core.qase.gateway.DataConsolidator;
 import com.sysmap.wellness.utils.LoggerUtils;
 import com.sysmap.wellness.utils.MetricsCollector;
 import org.json.JSONArray;

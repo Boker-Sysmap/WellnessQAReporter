@@ -1,6 +1,6 @@
 package com.sysmap.wellness.report.service.engine;
 
-import com.sysmap.wellness.report.kpi.history.KPIHistoryRecord;
+import com.sysmap.wellness.core.kpi.history.KPIHistoryRecord;
 import com.sysmap.wellness.report.service.KPIHistoryService;
 import com.sysmap.wellness.report.service.model.KPIData;
 

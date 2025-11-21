@@ -2,75 +2,41 @@ package com.sysmap.wellness.report.generator;
 
 import com.sysmap.wellness.report.service.engine.KPIEngine;
 import com.sysmap.wellness.report.service.model.KPIData;
-import com.sysmap.wellness.utils.LoggerUtils;
-import org.json.JSONObject;
+import com.sysmap.wellness.core.kpi.service.KPIReleaseCoverageService;
+import com.sysmap.wellness.utils.IdentifierParser;
 
-import java.util.*;
+import java.util.List;
+import java.util.Map;
 
 /**
- * Responsável por executar o {@link KPIEngine}, calcular
- * os KPIs por projeto e determinar a release "principal"
- * de cada projeto para uso nas abas executivas.
+ * Processador auxiliar responsável por executar o KPIEngine isoladamente,
+ * usado quando o report precisa gerar apenas KPIs ou validar consistência
+ * antes da geração das abas do Excel.
+ *
+ * Importante:
+ *  - O KPIEngine não utiliza mais latestReleaseId.
+ *  - Todo o histórico é atualizado livremente, sem congelamento.
+ *  - O agrupamento por release é totalmente baseado no IdentifierParser POSICIONAL.
  */
 public class ReportKpiProcessor {
 
-    private final KPIEngine kpiEngine = new KPIEngine();
-
     /**
-     * Executa o cálculo de KPIs para todos os projetos e
-     * constrói a estrutura usada pelas abas executivas.
+     * Executa o pipeline de KPIs para todos os projetos do consolidated.
      *
-     * @param consolidatedData Dados consolidados por projeto.
-     * @param fallbackRelease  Release padrão baseada no nome do arquivo.
-     * @return Estrutura contendo KPIs por projeto e release principal.
+     * @param consolidated Mapa PROJECT → consolidated.json já carregado.
+     * @return Mapa PROJECT → lista de KPIs resultantes.
      */
-    public ReportKpiResult process(
-        Map<String, JSONObject> consolidatedData,
-        String fallbackRelease
-    ) {
+    public Map<String, List<KPIData>> process(Map<String, org.json.JSONObject> consolidated) {
 
-        Map<String, List<KPIData>> kpisByProject =
-            kpiEngine.calculateForAllProjects(consolidatedData, fallbackRelease);
+        KPIEngine engine = new KPIEngine(
+            IdentifierParser::parse,
+            List.of(
+                new KPIReleaseCoverageService()
+                // outros KPIs podem ser registrados aqui (releaseResults, etc.)
+            )
+        );
 
-        LoggerUtils.info("📊 KPIs calculados para " + kpisByProject.size() + " projetos.");
-
-        Map<String, String> releaseByProject =
-            buildReleaseByProjectMap(kpisByProject, fallbackRelease);
-
-        return new ReportKpiResult(kpisByProject, releaseByProject);
-    }
-
-    /**
-     * Determina qual release deve ser considerada “principal”
-     * para cada projeto, utilizada pelo Resumo Executivo.
-     *
-     * <p>Regra atual: pega o primeiro grupo encontrado na lista
-     * de KPIs (release associada aos KPIs mais recentes daquela
-     * execução). Caso não haja grupo, usa o fallback baseado
-     * no nome do arquivo.</p>
-     *
-     * @param kpisByProject KPIs agrupados por projeto.
-     * @param fallback      Release padrão caso nenhuma seja encontrada.
-     * @return Mapa projeto → release principal.
-     */
-    private Map<String, String> buildReleaseByProjectMap(
-        Map<String, List<KPIData>> kpisByProject,
-        String fallback
-    ) {
-        Map<String, String> map = new LinkedHashMap<>();
-
-        for (String project : kpisByProject.keySet()) {
-
-            String release =
-                kpisByProject.get(project).stream()
-                    .filter(k -> k.getGroup() != null && !k.getGroup().isEmpty())
-                    .map(KPIData::getGroup)
-                    .findFirst()
-                    .orElse(fallback);
-
-            map.put(project, release);
-        }
-
-        return map;
+        // ✔ Versão final: apenas 1 argumento
+        return engine.calculateForAllProjects(consolidated);
     }
 }

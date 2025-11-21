@@ -5,60 +5,12 @@ import org.json.JSONArray;
 import org.json.JSONObject;
 
 import java.time.*;
-import java.time.format.DateTimeParseException;
 import java.util.*;
 
-/**
- * Serviço responsável por consolidar, normalizar e enriquecer os dados de defeitos
- * provenientes do Qase, produzindo uma estrutura unificada e padronizada para o
- * relatório “Gestão de Defeitos – Analítico”.
- *
- * <p>Este serviço integra diferentes fontes de informação dentro do consolidated.json,
- * correlacionando:</p>
- *
- * <ul>
- *   <li><b>defects</b> → informações principais;</li>
- *   <li><b>results</b> → ligações entre defeitos e execuções;</li>
- *   <li><b>cases</b> → identificação da funcionalidade;</li>
- *   <li><b>suites</b> → título da funcionalidade associada;</li>
- *   <li><b>users</b> → identificação do responsável;</li>
- * </ul>
- *
- * <p>Também implementa suporte total aos dois formatos oficiais do campo {@code results}
- * utilizados pelo Qase:</p>
- *
- * <ol>
- *   <li>Array simples de hashes: <code>["hash1", "hash2"]</code></li>
- *   <li>Array de objetos: <code>[{ "hash": "..." }]</code></li>
- * </ol>
- *
- * <p>O resultado final é uma estrutura enriquecida que facilita a geração de relatórios
- * executivos e analíticos com informações completas sobre cada defeito.</p>
- */
 public class DefectAnalyticalService {
 
     /**
      * Consolida e normaliza defeitos de todos os projetos.
-     *
-     * <p>Para cada projeto, o método:</p>
-     *
-     * <ul>
-     *   <li>Extrai arrays seguros de defects, results, users, suites e cases;</li>
-     *   <li>Constrói mapas de lookup para acesso rápido por id/hash;</li>
-     *   <li>Enriquece cada defeito com:
-     *       <ul>
-     *         <li>ID original;</li>
-     *         <li>nome da suite (funcionalidade);</li>
-     *         <li>severity, priority e status;</li>
-     *         <li>usuário que reportou;</li>
-     *         <li>datas normalizadas;</li>
-     *         <li>ticket relacionado (custom_field id 4);</li>
-     *       </ul>
-     *   </li>
-     * </ul>
-     *
-     * @param consolidatedData Map contendo consolidated.json por projeto.
-     * @return Mapa projeto → array de defeitos enriquecidos.
      */
     public Map<String, JSONArray> prepareData(Map<String, JSONObject> consolidatedData) {
 
@@ -70,37 +22,35 @@ public class DefectAnalyticalService {
             String projectKey = entry.getKey();
             JSONObject projectData = entry.getValue();
 
-            // Arrays seguros contendo eventuais chaves alternativas.
+            // --- Arrays seguros (agora consistentes com o novo consolidado)
             JSONArray defectsArray = safeArray(projectData, "defects", "defect");
-            JSONArray usersArray = safeArray(projectData, "users", "user");
-            JSONArray resultsArray = safeArray(projectData, "results", "result");
-            JSONArray casesArray = safeArray(projectData, "cases", "case");
-            JSONArray suitesArray = safeArray(projectData, "suites", "suite");
+            JSONArray usersArray   = safeArray(projectData, "users",   "user");
+            JSONArray resultsArray = safeArray(projectData, "results", "result"); // CORRETO
+            JSONArray casesArray   = safeArray(projectData, "cases", "case");
+            JSONArray suitesArray  = safeArray(projectData, "suites", "suite");
 
             LoggerUtils.step("📦 Projeto " + projectKey +
                 " | defects=" + defectsArray.length() +
-                " | users=" + usersArray.length() +
                 " | results=" + resultsArray.length() +
                 " | cases=" + casesArray.length() +
                 " | suites=" + suitesArray.length());
 
-            // Mapas de acesso rápido
+            // --- Mapas de acesso rápido
             Map<String, JSONObject> resultsByHash = buildResultsByHash(resultsArray);
-            Map<Integer, JSONObject> casesById = buildCasesById(casesArray);
-            Map<Integer, JSONObject> suitesById = buildSuitesById(suitesArray);
-            Map<Integer, JSONObject> usersById = buildUsersById(usersArray);
+            Map<Integer, JSONObject> casesById    = buildCasesById(casesArray);
+            Map<Integer, JSONObject> suitesById   = buildSuitesById(suitesArray);
+            Map<Integer, JSONObject> usersById    = buildUsersById(usersArray);
 
             JSONArray normalizedDefects = new JSONArray();
 
             // =====================================================
-            //  ENRIQUECIMENTO DE CADA DEFEITO
+            //   ENRIQUECIMENTO DE CADA DEFEITO
             // =====================================================
             for (int i = 0; i < defectsArray.length(); i++) {
 
                 JSONObject defect = defectsArray.getJSONObject(i);
                 JSONObject enriched = new JSONObject();
 
-                // Campos básicos
                 enriched.put("orig_id", defect.opt("id"));
                 enriched.put("title", defect.optString("title", ""));
                 enriched.put("status", defect.optString("status", ""));
@@ -110,24 +60,14 @@ public class DefectAnalyticalService {
                 enriched.put("updated_at", defect.optString("updated_at", ""));
                 enriched.put("resolved_at", defect.optString("resolved_at", ""));
 
-                // Campo customizado: ticket
+                // --- Custom field "ticket" (id 4)
                 String ticket = extractCustomField(defect, 4);
                 enriched.put("ticket", ticket == null ? "N/A" : ticket);
 
-                // Usuário que reportou
-                String reportedBy = "Desconhecido";
-                if (defect.has("member_id")) {
-                    int memberId = defect.optInt("member_id", -1);
-                    JSONObject user = usersById.get(memberId);
-                    if (user != null) {
-                        reportedBy = user.optString("name",
-                            user.optString("title",
-                                user.optString("full_name", "Desconhecido")));
-                    }
-                }
-                enriched.put("reported_by", reportedBy);
+                // --- Usuário responsável
+                enriched.put("reported_by", resolveReportedBy(defect, usersById));
 
-                // Funcionalidade (suite)
+                // --- Funcionalidade (suite)
                 String suiteTitle = resolveSuiteTitleForDefect(
                     defect,
                     resultsByHash,
@@ -137,7 +77,7 @@ public class DefectAnalyticalService {
                 );
                 enriched.put("suite", suiteTitle == null ? "Não identificada" : suiteTitle);
 
-                // Data ISO de reporte, com regras específicas por severity
+                // --- Data ISO final
                 String reportDateIso = computeReportDateIso(
                     defect,
                     enriched.optString("severity", ""),
@@ -145,7 +85,7 @@ public class DefectAnalyticalService {
                 );
                 enriched.put("report_date_iso", reportDateIso == null ? "" : reportDateIso);
 
-                // Registro original para auditoria
+                // Original (auditoria)
                 enriched.put("source", defect);
 
                 normalizedDefects.put(enriched);
@@ -158,27 +98,22 @@ public class DefectAnalyticalService {
         return projectDefects;
     }
 
-    // =====================================================================
-    // BUILD MAPS
-    // =====================================================================
+    // =============================================================
+    // MAP BUILDERS
+    // =============================================================
 
-    /**
-     * Constrói um mapa hash → result.
-     *
-     * @param results Array de resultados do consolidated.
-     * @return Mapa hash → JSONObject result.
-     */
     private Map<String, JSONObject> buildResultsByHash(JSONArray results) {
         Map<String, JSONObject> map = new HashMap<>();
         for (int i = 0; i < results.length(); i++) {
             JSONObject r = results.getJSONObject(i);
             String hash = r.optString("hash", null);
-            if (hash != null && !hash.isBlank()) map.put(hash, r);
+            if (hash != null && !hash.isBlank()) {
+                map.put(hash, r);
+            }
         }
         return map;
     }
 
-    /** Constrói mapa id → caso. */
     private Map<Integer, JSONObject> buildCasesById(JSONArray arr) {
         Map<Integer, JSONObject> m = new HashMap<>();
         for (int i = 0; i < arr.length(); i++) {
@@ -189,7 +124,6 @@ public class DefectAnalyticalService {
         return m;
     }
 
-    /** Constrói mapa id → suite (funcionalidade). */
     private Map<Integer, JSONObject> buildSuitesById(JSONArray arr) {
         Map<Integer, JSONObject> m = new HashMap<>();
         for (int i = 0; i < arr.length(); i++) {
@@ -200,7 +134,6 @@ public class DefectAnalyticalService {
         return m;
     }
 
-    /** Constrói mapa id → usuário. */
     private Map<Integer, JSONObject> buildUsersById(JSONArray arr) {
         Map<Integer, JSONObject> m = new HashMap<>();
         for (int i = 0; i < arr.length(); i++) {
@@ -211,23 +144,10 @@ public class DefectAnalyticalService {
         return m;
     }
 
-    // =====================================================================
-    // CORRELAÇÃO: DEFECT → RESULT → CASE → SUITE
-    // =====================================================================
+    // =============================================================
+    // CORRELAÇÃO DEFECT → RESULT → CASE → SUITE
+    // =============================================================
 
-    /**
-     * Resolve a funcionalidade (suite.title) associada ao defeito,
-     * utilizando uma cadeia de correlação progressiva:
-     *
-     * <ol>
-     *   <li>Primeiro: analisa o campo defect.results em ambos os formatos;</li>
-     *   <li>Segundo: busca entries de results que tenham o defect_id correspondente;</li>
-     *   <li>Terceiro: verifica se o próprio defeito possui case_id direto;</li>
-     *   <li>Fallback: retorna null.</li>
-     * </ol>
-     *
-     * @return Nome da suite ou null se não identificada.
-     */
     private String resolveSuiteTitleForDefect(
         JSONObject defect,
         Map<String, JSONObject> resultsByHash,
@@ -236,7 +156,7 @@ public class DefectAnalyticalService {
         JSONArray allResults
     ) {
 
-        // SUPORTE AOS 2 FORMATOS DE results
+        // SUPORTE: defect.results (A: ["hash"], B: [{"hash": "..."}])
         if (defect.has("results")) {
 
             Object rObj = defect.get("results");
@@ -246,17 +166,11 @@ public class DefectAnalyticalService {
 
                 for (int i = 0; i < ra.length(); i++) {
 
-                    Object ref = ra.get(i);
                     String hash = null;
 
-                    // Formato A: ["hash"]
-                    if (ref instanceof String) {
-                        hash = (String) ref;
-                    }
-                    // Formato B: [{"hash": "..."}]
-                    else if (ref instanceof JSONObject) {
-                        hash = ((JSONObject) ref).optString("hash", null);
-                    }
+                    Object ref = ra.get(i);
+                    if (ref instanceof String) hash = (String) ref;
+                    if (ref instanceof JSONObject) hash = ((JSONObject) ref).optString("hash");
 
                     if (hash != null && resultsByHash.containsKey(hash)) {
 
@@ -272,40 +186,32 @@ public class DefectAnalyticalService {
             }
         }
 
-        // TENTATIVA 2 — Procurar por defect_id
-        String defId = String.valueOf(defect.opt("id"));
+        // TENTATIVA 2 — procurar por defect_id em results
+        String defectId = String.valueOf(defect.opt("id"));
 
         for (int i = 0; i < allResults.length(); i++) {
-            JSONObject r = allResults.getJSONObject(i);
+            JSONObject r = allResults.optJSONObject(i);
+            if (r == null) continue;
 
-            if (r.has("defect_id")) {
-                if (String.valueOf(r.opt("defect_id")).equals(defId)) {
-
-                    int caseId = r.optInt("case_id", -1);
-
-                    if (caseId > 0) {
-                        String suite = suiteTitleFromCaseId(caseId, casesById, suitesById);
-                        if (suite != null) return suite;
-                    }
+            // ✔ CORREÇÃO AQUI
+            if (r.optString("defect_id", "").equals(defectId)) {
+                int caseId = r.optInt("case_id", -1);
+                if (caseId > 0) {
+                    String suite = suiteTitleFromCaseId(caseId, casesById, suitesById);
+                    if (suite != null) return suite;
                 }
             }
         }
 
-        // TENTATIVA 3 — Fallback: case_id direto no defeito
+        // TENTATIVA 3 — fallback: defect.case_id
         int caseId = defect.optInt("case_id", -1);
         if (caseId > 0) {
-            String suite = suiteTitleFromCaseId(caseId, casesById, suitesById);
-            if (suite != null) return suite;
+            return suiteTitleFromCaseId(caseId, casesById, suitesById);
         }
 
         return null;
     }
 
-    /**
-     * Obtém o nome da suite (funcionalidade) a partir do case_id.
-     *
-     * @return Título da suíte ou null se não encontrada.
-     */
     private String suiteTitleFromCaseId(
         int caseId,
         Map<Integer, JSONObject> casesById,
@@ -324,18 +230,9 @@ public class DefectAnalyticalService {
         return s.optString("title", "Sem Nome");
     }
 
-    // =====================================================================
-    // EXTRAÇÃO DE CUSTOM FIELDS
-    // =====================================================================
-
-    /**
-     * Extrai o valor de um custom_field específico dentro do defeito,
-     * conforme o {@code id} fornecido.
-     *
-     * @param defect   Objeto JSON do defeito.
-     * @param customId ID do custom_field desejado.
-     * @return Texto do valor ou null se inexistente.
-     */
+    // =============================================================
+    // CUSTOM FIELDS
+    // =============================================================
     private String extractCustomField(JSONObject defect, int customId) {
         if (!defect.has("custom_fields")) return null;
 
@@ -359,52 +256,24 @@ public class DefectAnalyticalService {
         return null;
     }
 
-    // =====================================================================
-    // DATAS E NORMALIZAÇÃO
-    // =====================================================================
+    // =============================================================
+    // DATAS
+    // =============================================================
 
-    /**
-     * Calcula uma data ISO de reporte para o defeito, aplicando as seguintes regras:
-     *
-     * <ul>
-     *   <li>Se existir custom_field de reporte (id 17):
-     *       <ul>
-     *         <li>Se for ISO completo → usa diretamente;</li>
-     *         <li>Se for apenas data → complementa horário;</li>
-     *       </ul>
-     *   </li>
-     *   <li>Se não existir:
-     *       <ul>
-     *         <li>Usa created_at como fallback;</li>
-     *       </ul>
-     *   </li>
-     *   <li>Se severity for crítica/major/blocker:
-     *       <ul>
-     *         <li>Preserva horário original;</li>
-     *       </ul>
-     *   </li>
-     *   <li>Caso contrário: define horário padrão 11:00.</li>
-     * </ul>
-     *
-     * @param defect     Defeito original.
-     * @param severity   Severidade.
-     * @param createdAtIso ISO de criação.
-     * @return Data ISO final calculada.
-     */
     private String computeReportDateIso(JSONObject defect, String severity, String createdAtIso) {
 
-        OffsetDateTime created = parseOffsetDateTime(createdAtIso);
+        OffsetDateTime created = parseOffset(createdAtIso);
         String reportField = extractCustomField(defect, 17);
 
         if (reportField == null || reportField.isBlank()) {
             return created != null ? created.toString() : "";
         }
 
-        OffsetDateTime reportDateTime = parseOffsetDateTime(reportField);
+        OffsetDateTime reportDT = parseOffset(reportField);
         LocalDate reportDate;
 
-        if (reportDateTime != null) {
-            reportDate = reportDateTime.toLocalDate();
+        if (reportDT != null) {
+            reportDate = reportDT.toLocalDate();
         } else {
             try {
                 reportDate = LocalDate.parse(reportField);
@@ -413,28 +282,21 @@ public class DefectAnalyticalService {
             }
         }
 
-        LocalTime timeBase;
+        LocalTime timeBase =
+            severity.equalsIgnoreCase("critical") ||
+                severity.equalsIgnoreCase("blocker") ||
+                severity.equalsIgnoreCase("major")
+                ? (created != null ? created.toLocalTime() : LocalTime.NOON)
+                : LocalTime.of(11, 0);
 
-        if ("critical".equalsIgnoreCase(severity) ||
-            "blocker".equalsIgnoreCase(severity) ||
-            "major".equalsIgnoreCase(severity)) {
-            timeBase = created != null ? created.toLocalTime() : LocalTime.NOON;
-        } else {
-            timeBase = LocalTime.of(11, 0);
-        }
+        ZoneOffset offset = created != null
+            ? created.getOffset()
+            : OffsetDateTime.now().getOffset();
 
-        ZoneOffset offset = created != null ? created.getOffset() : OffsetDateTime.now().getOffset();
         return OffsetDateTime.of(reportDate, timeBase, offset).toString();
     }
 
-    /**
-     * Faz parsing de strings ISO ou LocalDateTime, com tolerância a formatos
-     * incompletos. Usado para datas de criação e reporte.
-     *
-     * @param iso Texto ISO.
-     * @return OffsetDateTime ou null se inválido.
-     */
-    private OffsetDateTime parseOffsetDateTime(String iso) {
+    private OffsetDateTime parseOffset(String iso) {
         if (iso == null || iso.isBlank()) return null;
         try {
             return OffsetDateTime.parse(iso);
@@ -446,27 +308,35 @@ public class DefectAnalyticalService {
         return null;
     }
 
-    // =====================================================================
+    // =============================================================
     // SAFE ARRAY
-    // =====================================================================
+    // =============================================================
 
-    /**
-     * Extrai um JSONArray de forma tolerante, aceitando arrays e objetos.
-     * Se o valor for um objeto, ele é envolvido em um array com único elemento.
-     * Se a chave não existir, retorna array vazio.
-     *
-     * @param source Objeto original.
-     * @param keys   Chaves possíveis.
-     * @return JSONArray seguro.
-     */
     private JSONArray safeArray(JSONObject source, String... keys) {
-        for (String k : keys) {
-            if (source.has(k)) {
-                Object val = source.get(k);
+        for (String key : keys) {
+            if (source.has(key)) {
+                Object val = source.get(key);
                 if (val instanceof JSONArray) return (JSONArray) val;
                 if (val instanceof JSONObject) return new JSONArray().put(val);
             }
         }
         return new JSONArray();
+    }
+
+    // =============================================================
+    // REPORTE POR USER
+    // =============================================================
+
+    private String resolveReportedBy(JSONObject defect, Map<Integer, JSONObject> usersById) {
+
+        if (!defect.has("member_id")) return "Desconhecido";
+
+        int id = defect.optInt("member_id", -1);
+        JSONObject user = usersById.get(id);
+        if (user == null) return "Desconhecido";
+
+        return user.optString("name",
+            user.optString("title",
+                user.optString("full_name", "Desconhecido")));
     }
 }
